@@ -1,12 +1,17 @@
 {
   "manifest_version": 3,
   "name": "Misskey Reader",
-  "description": "Misskeyの新着ノート本文を棒読みちゃんへ送信します。",
-  "version": "0.1.1",
-  "permissions": ["storage"],
+  "description": "Misskeyの新着ノート本文をVOICEVOXで読み上げます。",
+  "version": "0.2.0",
+  "minimum_chrome_version": "109",
+  "permissions": ["storage", "offscreen"],
   "host_permissions": [
-    "ws://localhost/*",
-    "ws://127.0.0.1/*"
+    "http://localhost:50021/*",
+    "http://127.0.0.1:50021/*"
+  ],
+  "optional_host_permissions": [
+    "http://*/*",
+    "https://*/*"
   ],
   "background": {
     "service_worker": "background.js"
@@ -20,6 +25,6 @@
   ],
   "options_page": "options.html",
   "action": {
-    "default_title": "Misskey Reader（設定は右クリックから）"
+    "default_title": "Misskey Reader 設定"
   }
 }

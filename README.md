@@ -1,14 +1,30 @@
-# Misskey Reader v0.1
+# Misskey Reader v0.2
 
-`https://misskey.niri.la/` のタイムラインに新しく表示されたノート本文を、棒読みちゃん WebSocket Plugin へ送る Chromium 拡張です。Misskey API、Cookie、ログイン情報は使用しません。
+`https://misskey.niri.la/` のタイムラインに新しく表示されたノート本文を、ローカルのVOICEVOXで読み上げるChromium拡張です。Misskey API、Cookie、ログイン情報は使用しません。
 
-## インストール
+## 必要環境
 
-1. [BouyomiChan WebSocket Plugin](https://github.com/chocoa/BouyomiChan-WebSocket-Plugin) を導入し、棒読みちゃんの「その他」タブでWebSocketサーバーを有効にします。
-2. Chrome は `chrome://extensions/`、Edge は `edge://extensions/` を開きます。
+- Windows 11
+- Google Chrome、Microsoft EdgeなどのChromium互換ブラウザ
+- [VOICEVOX](https://voicevox.hiroshiba.jp/)
+
+追加プラグイン、ブリッジアプリ、開発環境は必要ありません。
+
+## インストールと設定
+
+1. VOICEVOXを通常どおり起動します。
+2. Chromeは `chrome://extensions/`、Edgeは `edge://extensions/` を開きます。
 3. 「デベロッパー モード」を有効にし、「パッケージ化されていない拡張機能を読み込む」でこのフォルダーを選びます。
-4. 拡張機能の詳細画面から「拡張機能のオプション」を開き、WebSocket Plugin URLを確認します（現行プラグインの既定値 `ws://localhost:55000/`）。保存後、「テスト読み上げ」で接続を確認できます。
-5. Misskeyを再読み込みします。読み込み時点の既存ノートは読まず、その後追加されたノートだけを読みます。
+4. Misskey Readerの設定画面を開きます。
+5. ENGINE URLが `http://127.0.0.1:50021` であることを確認し、「話者一覧を取得」を押します。
+6. 話者とスタイルを選び、設定を保存して「テスト読み上げ」を押します。
+7. Misskeyを再読み込みします。読み込み時点の既存ノートは読まず、その後追加されたノートだけを読みます。
+
+## 読み上げ処理
+
+VOICEVOX ENGINEの `/audio_query` と `/synthesis` APIでWAV音声を生成し、Manifest V3のoffscreen documentで再生します。新着ノートはFIFOキューで1件ずつ生成・再生するため、複数の音声が重なりません。
+
+設定画面では話速、音高、抑揚、音量を変更できます。VOICEVOXが起動していない場合もMisskeyの監視は継続し、次の新着ノートや接続テスト時に改めて接続します。
 
 ## 動作と制限
 
@@ -16,11 +32,11 @@
 - 本文がない画像・ファイルだけのノートと、通常Renoteは読みません。
 - 引用Renoteは外側に入力されたコメントのみを候補にします。
 - MisskeyのDOM構造変更により本文を検出できなくなる可能性があります。開発者ツールの `[MisskeyReader]` ログで判定状況を確認できます。
-- WebSocket送信形式は `command: "talk"` と `speed`、`pitch`、`volume`、`voiceType`、`text` を含む現行プラグインのJSON形式です。
-- 棒読みちゃん本体の「Socket通信」ポート50001は独自TCPプロトコルであり、WebSocketではありません。この拡張は50001への接続を拒否します。本体のSocket通信設定は、この拡張とWebSocket Pluginの連携には使用しません。
-- 旧WebSocket Pluginではポートと送信形式が異なります。この試作版は現行のJSON対応版を対象にしています。
-- 棒読みちゃんやプラグインが未起動の場合は設定画面とConsoleに接続エラーを表示し、Misskey側の処理は継続します。次の読み上げまたはテスト時に再接続します。
 
-## セキュリティ
+## 別PCのVOICEVOX
 
-通信先権限は `localhost` と `127.0.0.1` のWebSocketだけです。外部サーバーへノート本文を送信しません。
+Tailscale等で到達可能な別PCのENGINE URLも設定できます。初回保存時に、その接続先だけに対するChromeのアクセス権限確認が表示されます。URLには `http` または `https` のみ使用できます。VOICEVOX ENGINEを不特定多数へ公開しないでください。
+
+## プライバシー
+
+ノート本文は設定したVOICEVOX ENGINEにだけ送信します。初期設定では、このPCの `127.0.0.1:50021` だけを使用します。

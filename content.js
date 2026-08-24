@@ -112,8 +112,8 @@
     if (!result.text) return;
     console.debug(`${LOG} speak: ${JSON.stringify(result.text)}`);
     chrome.runtime.sendMessage({ type: "speak", text: result.text }).then((response) => {
-      if (!response?.ok) console.error(`${LOG} websocket error`, response?.error || "unknown error");
-    }).catch(() => console.error(`${LOG} websocket error`));
+      if (!response?.ok) console.error(`${LOG} VOICEVOX connection error`, response?.error || "unknown error");
+    }).catch(() => console.error(`${LOG} VOICEVOX connection error`));
   }
 
   function rootsWithin(node) {

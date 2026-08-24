@@ -2,143 +2,182 @@
 
 const DEFAULTS = {
   enabled: true,
-  websocketUrl: "ws://localhost:55000/",
-  speed: -1,
-  volume: -1,
-  pitch: -1,
-  voice: 0
+  voicevoxUrl: "http://127.0.0.1:50021",
+  speaker: 3,
+  speedScale: 1.0,
+  pitchScale: 0.0,
+  intonationScale: 1.0,
+  volumeScale: 1.0
 };
 
-let socket = null;
-let socketUrl = "";
-let connecting = null;
-let rejectConnecting = null;
+const speechQueue = [];
+let processingQueue = false;
+let creatingOffscreenDocument = null;
 
-function closeSocket() {
-  const activeSocket = socket;
-  if (rejectConnecting) rejectConnecting("WebSocket接続を中断しました");
-  if (activeSocket) {
-    activeSocket.onclose = null;
-    activeSocket.onerror = null;
-    activeSocket.close();
+function normalizeEngineUrl(value) {
+  const url = new URL(value);
+  if (!["http:", "https:"].includes(url.protocol)) {
+    throw new Error("VOICEVOX ENGINE URLはhttpまたはhttpsを指定してください");
   }
-  socket = null;
-  socketUrl = "";
-  connecting = null;
+  url.pathname = url.pathname.replace(/\/+$/, "");
+  url.search = "";
+  url.hash = "";
+  return url.href.replace(/\/$/, "");
 }
 
-function connect(url) {
-  let target;
+async function voicevoxFetch(baseUrl, path, options = {}) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 30000);
   try {
-    target = new URL(url);
-  } catch {
-    return Promise.reject(new Error("WebSocket URLが正しくありません"));
-  }
-  if (!["ws:", "wss:"].includes(target.protocol) ||
-      !["localhost", "127.0.0.1", "[::1]"].includes(target.hostname)) {
-    return Promise.reject(new Error("WebSocket URLはlocalhostを指定してください"));
-  }
-  if (target.port === "50001") {
-    return Promise.reject(new Error(
-      "50001番は棒読みちゃん標準TCP用です。WebSocket Pluginのポート（通常55000）を指定してください"
-    ));
-  }
-  if (socket?.readyState === WebSocket.OPEN && socketUrl === url) {
-    return Promise.resolve(socket);
-  }
-  if (connecting && socketUrl === url) return connecting;
-
-  closeSocket();
-  socketUrl = url;
-  connecting = new Promise((resolve, reject) => {
-    let ws;
-    let settled = false;
-    const fail = (message) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      if (rejectConnecting === fail) {
-        connecting = null;
-        rejectConnecting = null;
-      }
-      if (socket === ws) socket = null;
-      reject(new Error(message));
-    };
-    try {
-      ws = new WebSocket(url);
-    } catch (error) {
-      connecting = null;
-      reject(error);
-      return;
+    const response = await fetch(`${normalizeEngineUrl(baseUrl)}${path}`, {
+      ...options,
+      signal: controller.signal
+    });
+    if (!response.ok) {
+      const detail = (await response.text()).slice(0, 300);
+      throw new Error(`VOICEVOX APIエラー (${response.status})${detail ? `: ${detail}` : ""}`);
     }
-    socket = ws;
-    rejectConnecting = fail;
-    const timer = setTimeout(() => {
-      ws.close();
-      fail("WebSocket接続がタイムアウトしました");
-    }, 3000);
-
-    ws.onopen = () => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      if (rejectConnecting === fail) {
-        connecting = null;
-        rejectConnecting = null;
-      }
-      console.info("[MisskeyReader] websocket connected");
-      resolve(ws);
-    };
-    ws.onerror = () => {
-      console.error("[MisskeyReader] websocket error");
-      fail("WebSocket Pluginへ接続できませんでした");
-    };
-    ws.onclose = () => {
-      if (socket === ws) socket = null;
-      fail("WebSocket接続が閉じられました");
-    };
-  });
-  return connecting;
+    return response;
+  } catch (error) {
+    if (error.name === "AbortError") throw new Error("VOICEVOX ENGINEへの接続がタイムアウトしました");
+    if (error instanceof TypeError) throw new Error("VOICEVOX ENGINEへ接続できません");
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
-function makeTalkCommand(text, settings) {
-  return JSON.stringify({
-    command: "talk",
-    speed: Number(settings.speed),
-    pitch: Number(settings.pitch),
-    volume: Number(settings.volume),
-    voiceType: Number(settings.voice),
-    text
-  });
+async function synthesize(text, settings) {
+  const speaker = Number(settings.speaker);
+  console.info("[MisskeyReader] VOICEVOX request");
+  const queryParams = new URLSearchParams({ text, speaker: String(speaker) });
+  const queryResponse = await voicevoxFetch(
+    settings.voicevoxUrl,
+    `/audio_query?${queryParams}`,
+    { method: "POST" }
+  );
+  const query = await queryResponse.json();
+  query.speedScale = Number(settings.speedScale);
+  query.pitchScale = Number(settings.pitchScale);
+  query.intonationScale = Number(settings.intonationScale);
+  query.volumeScale = Number(settings.volumeScale);
+
+  const synthesisParams = new URLSearchParams({ speaker: String(speaker) });
+  const audioResponse = await voicevoxFetch(
+    settings.voicevoxUrl,
+    `/synthesis?${synthesisParams}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(query)
+    }
+  );
+  console.info("[MisskeyReader] synthesis complete");
+  return audioResponse.arrayBuffer();
 }
 
-async function speak(text, ignoreEnabled = false) {
+function arrayBufferToDataUrl(buffer) {
+  const bytes = new Uint8Array(buffer);
+  const chunkSize = 0x8000;
+  let binary = "";
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
+  }
+  return `data:audio/wav;base64,${btoa(binary)}`;
+}
+
+async function hasOffscreenDocument() {
+  const offscreenUrl = chrome.runtime.getURL("offscreen.html");
+  if (chrome.runtime.getContexts) {
+    const contexts = await chrome.runtime.getContexts({
+      contextTypes: ["OFFSCREEN_DOCUMENT"],
+      documentUrls: [offscreenUrl]
+    });
+    return contexts.length > 0;
+  }
+  const clientsList = await clients.matchAll();
+  return clientsList.some((client) => client.url === offscreenUrl);
+}
+
+async function ensureOffscreenDocument() {
+  if (await hasOffscreenDocument()) return;
+  if (!creatingOffscreenDocument) {
+    creatingOffscreenDocument = chrome.offscreen.createDocument({
+      url: "offscreen.html",
+      reasons: ["AUDIO_PLAYBACK"],
+      justification: "VOICEVOXが生成した新着ノートの音声を順番に再生するため"
+    }).finally(() => { creatingOffscreenDocument = null; });
+  }
+  await creatingOffscreenDocument;
+}
+
+async function playAudio(buffer) {
+  await ensureOffscreenDocument();
+  console.info("[MisskeyReader] playback started");
+  const response = await chrome.runtime.sendMessage({
+    target: "offscreen",
+    type: "playAudio",
+    audioDataUrl: arrayBufferToDataUrl(buffer)
+  });
+  if (!response?.ok) throw new Error(response?.error || "音声を再生できませんでした");
+  console.info("[MisskeyReader] playback finished");
+}
+
+async function speakNow(text, ignoreEnabled) {
   const settings = await chrome.storage.sync.get(DEFAULTS);
   if (!settings.enabled && !ignoreEnabled) return;
-
-  const payload = makeTalkCommand(text, settings);
-  let ws = await connect(settings.websocketUrl);
   try {
-    ws.send(payload);
-  } catch {
-    // 接続確認直後に切断された場合は、1回だけ接続し直す。
-    closeSocket();
-    ws = await connect(settings.websocketUrl);
-    ws.send(payload);
+    const audio = await synthesize(text, settings);
+    console.info("[MisskeyReader] VOICEVOX connected");
+    await playAudio(audio);
+  } catch (error) {
+    console.error("[MisskeyReader] VOICEVOX connection error", error.message);
+    throw error;
   }
+}
+
+function enqueueSpeech(text, ignoreEnabled = false) {
+  return new Promise((resolve, reject) => {
+    speechQueue.push({ text, ignoreEnabled, resolve, reject });
+    processQueue();
+  });
+}
+
+async function processQueue() {
+  if (processingQueue) return;
+  processingQueue = true;
+  while (speechQueue.length) {
+    const item = speechQueue.shift();
+    try {
+      await speakNow(item.text, item.ignoreEnabled);
+      item.resolve();
+    } catch (error) {
+      item.reject(error);
+    }
+  }
+  processingQueue = false;
+}
+
+async function getSpeakers(voicevoxUrl) {
+  const response = await voicevoxFetch(voicevoxUrl, "/speakers");
+  return response.json();
 }
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message?.target === "offscreen") return;
+  if (message?.type === "getSpeakers" && typeof message.voicevoxUrl === "string") {
+    getSpeakers(message.voicevoxUrl)
+      .then((speakers) => sendResponse({ ok: true, speakers }))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
   const isTest = message?.type === "testSpeak";
   if ((!isTest && message?.type !== "speak") || typeof message.text !== "string") return;
-  speak(message.text, isTest)
+  enqueueSpeech(message.text, isTest)
     .then(() => sendResponse({ ok: true }))
     .catch((error) => sendResponse({ ok: false, error: error.message }));
   return true;
-});
-
-chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === "sync" && changes.websocketUrl) closeSocket();
 });
 
 chrome.action.onClicked.addListener(() => chrome.runtime.openOptionsPage());
