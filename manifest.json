@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "Misskey Reader",
+  "description": "Misskeyの新着ノート本文を棒読みちゃんへ送信します。",
+  "version": "0.1.1",
+  "permissions": ["storage"],
+  "host_permissions": [
+    "ws://localhost/*",
+    "ws://127.0.0.1/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://misskey.niri.la/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "options_page": "options.html",
+  "action": {
+    "default_title": "Misskey Reader（設定は右クリックから）"
+  }
+}
