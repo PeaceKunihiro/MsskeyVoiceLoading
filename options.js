@@ -117,6 +117,10 @@ async function restore() {
 }
 
 document.querySelector("#voicevoxUrl").addEventListener("input", validateEngineUrl);
+document.querySelector("#enabled").addEventListener("change", async (event) => {
+  await chrome.storage.sync.set({ enabled: event.target.checked });
+  showStatus(event.target.checked ? "読み上げをONにしました。" : "読み上げをOFFにしました。", "success");
+});
 loadSpeakersButton.addEventListener("click", loadSpeakers);
 
 form.addEventListener("submit", async (event) => {
@@ -127,6 +131,10 @@ form.addEventListener("submit", async (event) => {
 });
 
 testButton.addEventListener("click", async () => {
+  if (!document.querySelector("#enabled").checked) {
+    showStatus("テスト読み上げを行うには読み上げをONにしてください。", "error");
+    return;
+  }
   if (!await ensureEnginePermission()) return;
   await chrome.storage.sync.set(readSettings());
   showStatus("音声を生成しています…");
@@ -142,6 +150,12 @@ testButton.addEventListener("click", async () => {
     showStatus(`VOICEVOX ENGINEへ接続できません。\nVOICEVOXが起動していることを確認してください。\n${error.message}`, "error");
   } finally {
     testButton.disabled = false;
+  }
+});
+
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === "sync" && changes.enabled) {
+    document.querySelector("#enabled").checked = Boolean(changes.enabled.newValue);
   }
 });
 
