@@ -4,8 +4,12 @@
   const LOG = "[MisskeyReader]";
   const seenIds = new Set();
   const seenElements = new WeakSet();
+  const pendingRoots = new Set();
   let ready = false;
   let enabled = true;
+  let initialNoteCount = 5;
+  let maxReadLength = 64;
+  let removeUrls = true;
 
   const visible = (element) => {
     if (!(element instanceof HTMLElement)) return false;
@@ -54,6 +58,19 @@
       .trim();
   }
 
+  function formatSpeechText(text) {
+    let result = text;
+    if (removeUrls) {
+      result = result.replace(/https?:\/\/[^\s<>"'）】」』、。！？]+/giu, "");
+    }
+    result = result
+      .replace(/[ \t\u00a0]{2,}/g, " ")
+      .replace(/[ \t\u00a0]+\n/g, "\n")
+      .replace(/\n[ \t\u00a0]+/g, "\n")
+      .trim();
+    return [...result].slice(0, maxReadLength).join("");
+  }
+
   function extractBody(root) {
     const article = root.matches("article") ? root : root.querySelector(":scope article");
     if (!article) return { text: "" };
@@ -75,7 +92,7 @@
       const bPre = getComputedStyle(b.element).whiteSpace === "pre-wrap" ? 1 : 0;
       return bPre - aPre;
     });
-    return { text: shown[0].text };
+    return { text: formatSpeechText(shown[0].text) };
   }
 
   function identity(root) {
@@ -93,9 +110,9 @@
     return seenElements.has(root) || (id && seenIds.has(id));
   }
 
-  function processNote(root) {
+  function processNote(root, initial = false) {
     if (!root || !isTimelineNote(root)) return;
-    if (wasSeen(root)) {
+    if (!initial && wasSeen(root)) {
       console.debug(`${LOG} skipped duplicate`);
       return;
     }
@@ -129,30 +146,59 @@
   }
 
   function initialize() {
+    const loadedRoots = [];
+    const uniqueRoots = new Set();
     document.querySelectorAll("[data-scroll-anchor] > article, article").forEach((article) => {
       const root = article.closest("[data-scroll-anchor]") || article;
-      if (isTimelineNote(root)) markSeen(root);
+      if (isTimelineNote(root) && !uniqueRoots.has(root)) {
+        uniqueRoots.add(root);
+        loadedRoots.push(root);
+        markSeen(root);
+      }
     });
     console.info(`${LOG} timeline detected`);
     ready = true;
+
+    if (enabled && initialNoteCount > 0) {
+      // MisskeyのタイムラインDOMは上側が新しいため、先頭N件を逆順で読む。
+      loadedRoots.slice(0, initialNoteCount).reverse().forEach((root) => processNote(root, true));
+    }
+    pendingRoots.forEach(processNote);
+    pendingRoots.clear();
   }
 
-  chrome.storage.sync.get({ enabled: true }).then((settings) => { enabled = settings.enabled; });
+  chrome.storage.sync.get({
+    enabled: true,
+    initialNoteCount: 5,
+    maxReadLength: 64,
+    removeUrls: true
+  }).then((settings) => {
+    enabled = settings.enabled;
+    initialNoteCount = Math.max(0, Math.floor(Number(settings.initialNoteCount) || 0));
+    maxReadLength = Math.max(1, Math.floor(Number(settings.maxReadLength) || 64));
+    removeUrls = settings.removeUrls;
+    initialize();
+  });
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area === "sync" && changes.enabled) enabled = changes.enabled.newValue;
+    if (area === "sync" && changes.initialNoteCount) initialNoteCount = Math.max(0, Math.floor(Number(changes.initialNoteCount.newValue) || 0));
+    if (area === "sync" && changes.maxReadLength) maxReadLength = Math.max(1, Math.floor(Number(changes.maxReadLength.newValue) || 64));
+    if (area === "sync" && changes.removeUrls) removeUrls = changes.removeUrls.newValue;
   });
 
   const observer = new MutationObserver((mutations) => {
-    if (!ready) return;
     const roots = new Set();
     for (const mutation of mutations) {
       mutation.addedNodes.forEach((node) => rootsWithin(node).forEach((root) => roots.add(root)));
     }
-    // Misskeyがノートを段階的に構築するため、同一バッチの描画完了後に読む。
-    if (roots.size) requestAnimationFrame(() => roots.forEach(processNote));
+    if (!ready) {
+      roots.forEach((root) => pendingRoots.add(root));
+      return;
+    }
+    // requestAnimationFrameは背景タブで停止するため、microtaskで同一DOM更新後に読む。
+    if (roots.size) queueMicrotask(() => roots.forEach(processNote));
   });
 
   observer.observe(document.body, { childList: true, subtree: true });
-  initialize();
   console.info(`${LOG} initialized`);
 })();

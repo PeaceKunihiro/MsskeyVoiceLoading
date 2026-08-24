@@ -41,6 +41,16 @@
       <label>音量<input id="volumeScale" type="number" min="0" max="2" step="0.05" required></label>
     </div>
     <div class="row">
+      <label>ロード済ノート読み上げ数
+        <input id="initialNoteCount" type="number" min="0" max="50" step="1" required>
+        <small>0にすると起動時の既存ノートを読みません。</small>
+      </label>
+      <label>最大読み上げ文字数
+        <input id="maxReadLength" type="number" min="1" max="1000" step="1" required>
+      </label>
+    </div>
+    <label class="checkbox"><input id="removeUrls" type="checkbox">URLを読み上げない</label>
+    <div class="row">
       <button type="submit">保存</button>
       <button id="test" type="button">テスト読み上げ</button>
     </div>

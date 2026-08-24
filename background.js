@@ -7,7 +7,10 @@ const DEFAULTS = {
   speedScale: 1.0,
   pitchScale: 0.0,
   intonationScale: 1.0,
-  volumeScale: 1.0
+  volumeScale: 1.0,
+  initialNoteCount: 5,
+  maxReadLength: 64,
+  removeUrls: true
 };
 
 const speechQueue = [];
