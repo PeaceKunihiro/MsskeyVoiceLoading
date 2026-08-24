@@ -51,6 +51,16 @@
     </div>
     <label class="checkbox"><input id="removeUrls" type="checkbox">URLを読み上げない</label>
     <div class="row">
+      <label>待機キュー最大件数
+        <input id="maxQueueSize" type="number" min="0" max="100" step="1" required>
+        <small>超過時は待機中の最古ノートを破棄します。0なら待機しません。</small>
+      </label>
+      <label>投稿の有効時間（秒）
+        <input id="maxNoteAgeSeconds" type="number" min="0" max="86400" step="1" required>
+        <small>これより古いノートはキューへ入れません。0なら無制限です。</small>
+      </label>
+    </div>
+    <div class="row">
       <button type="submit">保存</button>
       <button id="test" type="button">テスト読み上げ</button>
     </div>

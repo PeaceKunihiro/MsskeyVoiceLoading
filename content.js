@@ -10,6 +10,7 @@
   let initialNoteCount = 5;
   let maxReadLength = 64;
   let removeUrls = true;
+  let latestAcceptedTimestamp = 0;
 
   const visible = (element) => {
     if (!(element instanceof HTMLElement)) return false;
@@ -99,6 +100,14 @@
     return root.getAttribute("data-scroll-anchor") || "";
   }
 
+  function postedAt(root) {
+    const article = root.matches("article") ? root : root.querySelector(":scope article");
+    const time = article && [...article.querySelectorAll("time[datetime]")]
+      .find((element) => element.closest("article") === article);
+    const timestamp = Date.parse(time?.getAttribute("datetime") || "");
+    return Number.isFinite(timestamp) ? timestamp : Date.now();
+  }
+
   function markSeen(root) {
     const id = identity(root);
     if (id) seenIds.add(id);
@@ -116,9 +125,14 @@
       console.debug(`${LOG} skipped duplicate`);
       return;
     }
+    const timestamp = postedAt(root);
     markSeen(root);
     const id = identity(root) || "(unknown)";
     console.debug(`${LOG} new note: ${id}`);
+    if (!initial && timestamp < latestAcceptedTimestamp) {
+      console.debug(`${LOG} skipped older note: ${id}`);
+      return;
+    }
     if (!enabled) return;
 
     const result = extractBody(root);
@@ -127,8 +141,10 @@
       return;
     }
     if (!result.text) return;
+    // 再生完了を待たず、キューへ渡す時点で遅延描画判定の基準を進める。
+    if (timestamp > latestAcceptedTimestamp) latestAcceptedTimestamp = timestamp;
     console.debug(`${LOG} speak: ${JSON.stringify(result.text)}`);
-    chrome.runtime.sendMessage({ type: "speak", text: result.text }).then((response) => {
+    chrome.runtime.sendMessage({ type: "speak", text: result.text, postedAt: timestamp }).then((response) => {
       if (!response?.ok) console.error(`${LOG} VOICEVOX connection error`, response?.error || "unknown error");
     }).catch(() => console.error(`${LOG} VOICEVOX connection error`));
   }
@@ -159,9 +175,21 @@
     console.info(`${LOG} timeline detected`);
     ready = true;
 
-    if (enabled && initialNoteCount > 0) {
-      // MisskeyのタイムラインDOMは上側が新しいため、先頭N件を逆順で読む。
-      loadedRoots.slice(0, initialNoteCount).reverse().forEach((root) => processNote(root, true));
+    if (initialNoteCount > 0 && loadedRoots.length) {
+      const selected = loadedRoots
+        .map((root) => ({ root, timestamp: postedAt(root) }))
+        .sort((a, b) => b.timestamp - a.timestamp)
+        .slice(0, initialNoteCount);
+
+      latestAcceptedTimestamp = Math.max(...selected.map(({ timestamp }) => timestamp));
+      if (enabled) {
+        selected
+          .sort((a, b) => a.timestamp - b.timestamp)
+          .forEach(({ root }) => processNote(root, true));
+      }
+    } else {
+      // 初期読み上げなし、または初期ノートなしなら、初期化時点より古い遅延描画を除外する。
+      latestAcceptedTimestamp = Date.now();
     }
     pendingRoots.forEach(processNote);
     pendingRoots.clear();

@@ -10,7 +10,9 @@ const DEFAULTS = {
   volumeScale: 1.0,
   initialNoteCount: 5,
   maxReadLength: 64,
-  removeUrls: true
+  removeUrls: true,
+  maxQueueSize: 10,
+  maxNoteAgeSeconds: 300
 };
 
 const speechQueue = [];
@@ -18,6 +20,12 @@ let processingQueue = false;
 let creatingOffscreenDocument = null;
 let activeAbortController = null;
 let cancellationGeneration = 0;
+let queueSequence = 0;
+let queueStartTimer = null;
+let queuePolicy = {
+  maxQueueSize: DEFAULTS.maxQueueSize,
+  maxNoteAgeSeconds: DEFAULTS.maxNoteAgeSeconds
+};
 
 class SpeechCancelledError extends Error {}
 
@@ -158,10 +166,38 @@ async function speakNow(text, generation) {
   }
 }
 
-function enqueueSpeech(text) {
+function enqueueSpeech(text, postedAt = Date.now()) {
+  const timestamp = Number.isFinite(Number(postedAt)) ? Number(postedAt) : Date.now();
+  const maxAgeMs = Math.max(0, Number(queuePolicy.maxNoteAgeSeconds)) * 1000;
+  if (maxAgeMs > 0 && Date.now() - timestamp > maxAgeMs) {
+    console.info("[MisskeyReader] skipped stale note");
+    return Promise.resolve();
+  }
+
   return new Promise((resolve, reject) => {
-    speechQueue.push({ text, generation: cancellationGeneration, resolve, reject });
-    processQueue();
+    speechQueue.push({
+      text,
+      postedAt: timestamp,
+      sequence: queueSequence++,
+      generation: cancellationGeneration,
+      resolve,
+      reject
+    });
+    speechQueue.sort((a, b) => a.postedAt - b.postedAt || a.sequence - b.sequence);
+
+    const limit = Math.max(0, Math.floor(Number(queuePolicy.maxQueueSize) || 0));
+    while (speechQueue.length > limit) {
+      const dropped = speechQueue.shift();
+      dropped.resolve();
+      console.info("[MisskeyReader] dropped oldest queued note");
+    }
+    if (speechQueue.length && !processingQueue && !queueStartTimer) {
+      // 同一DOM更新で届く複数ノートを集約してから投稿時刻順に処理する。
+      queueStartTimer = setTimeout(() => {
+        queueStartTimer = null;
+        processQueue();
+      }, 100);
+    }
   });
 }
 
@@ -194,6 +230,8 @@ async function updateActionState(enabled) {
 
 async function stopSpeech() {
   cancellationGeneration += 1;
+  if (queueStartTimer) clearTimeout(queueStartTimer);
+  queueStartTimer = null;
   if (activeAbortController) activeAbortController.abort();
   while (speechQueue.length) speechQueue.shift().resolve();
   console.info("[MisskeyReader] queue cleared");
@@ -225,7 +263,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   const isTest = message?.type === "testSpeak";
   if ((!isTest && message?.type !== "speak") || typeof message.text !== "string") return;
-  enqueueSpeech(message.text)
+  enqueueSpeech(message.text, message.postedAt)
     .then(() => sendResponse({ ok: true }))
     .catch((error) => sendResponse({ ok: false, error: error.message }));
   return true;
@@ -238,6 +276,14 @@ chrome.action.onClicked.addListener(async () => {
 
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area === "sync" && changes.enabled) applyEnabledState(Boolean(changes.enabled.newValue));
+  if (area === "sync" && changes.maxQueueSize) {
+    queuePolicy.maxQueueSize = changes.maxQueueSize.newValue;
+    const limit = Math.max(0, Math.floor(Number(queuePolicy.maxQueueSize) || 0));
+    while (speechQueue.length > limit) speechQueue.shift().resolve();
+  }
+  if (area === "sync" && changes.maxNoteAgeSeconds) {
+    queuePolicy.maxNoteAgeSeconds = changes.maxNoteAgeSeconds.newValue;
+  }
 });
 
 chrome.runtime.onStartup.addListener(async () => {
@@ -246,3 +292,7 @@ chrome.runtime.onStartup.addListener(async () => {
 });
 
 chrome.storage.sync.get({ enabled: true }).then(({ enabled }) => applyEnabledState(enabled));
+chrome.storage.sync.get({
+  maxQueueSize: DEFAULTS.maxQueueSize,
+  maxNoteAgeSeconds: DEFAULTS.maxNoteAgeSeconds
+}).then((settings) => { queuePolicy = settings; });

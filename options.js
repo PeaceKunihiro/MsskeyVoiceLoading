@@ -10,7 +10,9 @@ const DEFAULTS = {
   volumeScale: 1.0,
   initialNoteCount: 5,
   maxReadLength: 64,
-  removeUrls: true
+  removeUrls: true,
+  maxQueueSize: 10,
+  maxNoteAgeSeconds: 300
 };
 
 const fields = Object.keys(DEFAULTS);
