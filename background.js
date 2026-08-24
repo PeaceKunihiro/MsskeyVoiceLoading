@@ -166,24 +166,53 @@ async function speakNow(text, generation) {
   }
 }
 
-function enqueueSpeech(text, postedAt = Date.now()) {
-  const timestamp = Number.isFinite(Number(postedAt)) ? Number(postedAt) : Date.now();
-  const maxAgeMs = Math.max(0, Number(queuePolicy.maxNoteAgeSeconds)) * 1000;
-  if (maxAgeMs > 0 && Date.now() - timestamp > maxAgeMs) {
-    console.info("[MisskeyReader] skipped stale note");
-    return Promise.resolve();
-  }
+function checkFreshness(item, stage) {
+  const now = Date.now();
+  const maxNoteAgeSeconds = Math.max(0, Number(queuePolicy.maxNoteAgeSeconds) || 0);
+  const hasTimestamp = Number.isFinite(item.postedAt);
+  const ageSeconds = hasTimestamp ? (now - item.postedAt) / 1000 : null;
+  let decision = "accepted";
+  if (!hasTimestamp && maxNoteAgeSeconds > 0) decision = "timestamp-unavailable";
+  else if (maxNoteAgeSeconds > 0 && ageSeconds > maxNoteAgeSeconds) decision = "stale";
+
+  console.debug("[MisskeyReader] note freshness", {
+    stage,
+    noteId: item.noteId,
+    rawTimeAttribute: item.rawTime,
+    parsedPostedAt: hasTimestamp ? item.postedAt : null,
+    now,
+    ageSeconds,
+    maxNoteAgeSeconds,
+    decision
+  });
+  return decision === "accepted";
+}
+
+function enqueueSpeech(text, postedAt, noteId, rawTime) {
+  const numericTimestamp = postedAt === null || postedAt === undefined
+    ? NaN
+    : Number(postedAt);
+  const candidate = {
+    text,
+    noteId: noteId || "(unknown)",
+    rawTime: rawTime || {},
+    postedAt: Number.isFinite(numericTimestamp) ? numericTimestamp : NaN
+  };
+  if (!checkFreshness(candidate, "enqueue")) return Promise.resolve();
 
   return new Promise((resolve, reject) => {
     speechQueue.push({
-      text,
-      postedAt: timestamp,
+      ...candidate,
       sequence: queueSequence++,
       generation: cancellationGeneration,
       resolve,
       reject
     });
-    speechQueue.sort((a, b) => a.postedAt - b.postedAt || a.sequence - b.sequence);
+    speechQueue.sort((a, b) => {
+      const aTime = Number.isFinite(a.postedAt) ? a.postedAt : Infinity;
+      const bTime = Number.isFinite(b.postedAt) ? b.postedAt : Infinity;
+      return aTime - bTime || a.sequence - b.sequence;
+    });
 
     const limit = Math.max(0, Math.floor(Number(queuePolicy.maxQueueSize) || 0));
     while (speechQueue.length > limit) {
@@ -207,6 +236,10 @@ async function processQueue() {
   while (speechQueue.length) {
     const item = speechQueue.shift();
     try {
+      if (!checkFreshness(item, "before-playback")) {
+        item.resolve();
+        continue;
+      }
       await speakNow(item.text, item.generation);
       item.resolve();
     } catch (error) {
@@ -263,7 +296,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   const isTest = message?.type === "testSpeak";
   if ((!isTest && message?.type !== "speak") || typeof message.text !== "string") return;
-  enqueueSpeech(message.text, message.postedAt)
+  enqueueSpeech(message.text, message.postedAt, message.noteId, message.rawTime)
     .then(() => sendResponse({ ok: true }))
     .catch((error) => sendResponse({ ok: false, error: error.message }));
   return true;

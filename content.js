@@ -11,6 +11,7 @@
   let maxReadLength = 64;
   let removeUrls = true;
   let latestAcceptedTimestamp = 0;
+  let maxNoteAgeSeconds = 300;
 
   const visible = (element) => {
     if (!(element instanceof HTMLElement)) return false;
@@ -100,12 +101,77 @@
     return root.getAttribute("data-scroll-anchor") || "";
   }
 
-  function postedAt(root) {
+  function parsePostedAt(value) {
+    if (typeof value !== "string" || !value.trim()) return null;
+    const raw = value.trim();
+    if (/^\d{10,13}$/.test(raw)) {
+      const numeric = Number(raw);
+      const timestamp = raw.length === 10 ? numeric * 1000 : numeric;
+      return Number.isFinite(timestamp) ? timestamp : null;
+    }
+    let timestamp = Date.parse(raw);
+    if (Number.isFinite(timestamp)) return timestamp;
+
+    // titleで使われる日本語の絶対日時（例: 2026年8月25日 12:34:56）にも対応する。
+    const normalized = raw
+      .replace(/\([^)]*\)/g, "")
+      .replace(/年|月/g, "/")
+      .replace(/日/g, " ")
+      .replace(/時/g, ":")
+      .replace(/分/g, ":")
+      .replace(/秒/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
+    timestamp = Date.parse(normalized);
+    return Number.isFinite(timestamp) ? timestamp : null;
+  }
+
+  function noteTimeInfo(root) {
     const article = root.matches("article") ? root : root.querySelector(":scope article");
     const time = article && [...article.querySelectorAll("time[datetime]")]
       .find((element) => element.closest("article") === article);
-    const timestamp = Date.parse(time?.getAttribute("datetime") || "");
-    return Number.isFinite(timestamp) ? timestamp : Date.now();
+    const anyTime = time || (article && [...article.querySelectorAll("time")]
+      .find((element) => element.closest("article") === article));
+    if (!anyTime) return { timestamp: null, raw: {} };
+
+    const titledAncestor = anyTime.closest("[title]");
+    const raw = {
+      datetime: anyTime.getAttribute("datetime"),
+      title: anyTime.getAttribute("title"),
+      ancestorTitle: titledAncestor && article.contains(titledAncestor)
+        ? titledAncestor.getAttribute("title")
+        : null,
+      dataTimestamp: anyTime.getAttribute("data-timestamp"),
+      dataTime: anyTime.getAttribute("data-time"),
+      ariaLabel: anyTime.getAttribute("aria-label"),
+      text: anyTime.textContent?.trim() || null
+    };
+    const candidates = [
+      raw.datetime,
+      raw.title,
+      raw.ancestorTitle,
+      raw.dataTimestamp,
+      raw.dataTime,
+      raw.ariaLabel
+    ];
+    for (const candidate of candidates) {
+      const timestamp = parsePostedAt(candidate);
+      if (timestamp !== null) return { timestamp, raw };
+    }
+    return { timestamp: null, raw };
+  }
+
+  function logTimeDecision(noteId, timeInfo, decision) {
+    const now = Date.now();
+    console.debug(`${LOG} note time`, {
+      noteId,
+      rawTimeAttribute: timeInfo.raw,
+      parsedPostedAt: timeInfo.timestamp,
+      now,
+      ageSeconds: timeInfo.timestamp === null ? null : (now - timeInfo.timestamp) / 1000,
+      maxNoteAgeSeconds,
+      decision
+    });
   }
 
   function markSeen(root) {
@@ -125,12 +191,23 @@
       console.debug(`${LOG} skipped duplicate`);
       return;
     }
-    const timestamp = postedAt(root);
+    const timeInfo = noteTimeInfo(root);
+    const timestamp = timeInfo.timestamp;
     markSeen(root);
     const id = identity(root) || "(unknown)";
     console.debug(`${LOG} new note: ${id}`);
-    if (!initial && timestamp < latestAcceptedTimestamp) {
+    if (!initial && timestamp !== null && timestamp < latestAcceptedTimestamp) {
+      logTimeDecision(id, timeInfo, "stale");
       console.debug(`${LOG} skipped older note: ${id}`);
+      return;
+    }
+    const ageSeconds = timestamp === null ? null : (Date.now() - timestamp) / 1000;
+    if (timestamp === null && maxNoteAgeSeconds > 0) {
+      logTimeDecision(id, timeInfo, "timestamp-unavailable");
+      return;
+    }
+    if (maxNoteAgeSeconds > 0 && ageSeconds > maxNoteAgeSeconds) {
+      logTimeDecision(id, timeInfo, "stale");
       return;
     }
     if (!enabled) return;
@@ -142,9 +219,16 @@
     }
     if (!result.text) return;
     // 再生完了を待たず、キューへ渡す時点で遅延描画判定の基準を進める。
-    if (timestamp > latestAcceptedTimestamp) latestAcceptedTimestamp = timestamp;
+    if (timestamp !== null && timestamp > latestAcceptedTimestamp) latestAcceptedTimestamp = timestamp;
+    logTimeDecision(id, timeInfo, "accepted");
     console.debug(`${LOG} speak: ${JSON.stringify(result.text)}`);
-    chrome.runtime.sendMessage({ type: "speak", text: result.text, postedAt: timestamp }).then((response) => {
+    chrome.runtime.sendMessage({
+      type: "speak",
+      text: result.text,
+      noteId: id,
+      postedAt: timestamp,
+      rawTime: timeInfo.raw
+    }).then((response) => {
       if (!response?.ok) console.error(`${LOG} VOICEVOX connection error`, response?.error || "unknown error");
     }).catch(() => console.error(`${LOG} VOICEVOX connection error`));
   }
@@ -176,13 +260,21 @@
     ready = true;
 
     if (initialNoteCount > 0 && loadedRoots.length) {
-      const selected = loadedRoots
-        .map((root) => ({ root, timestamp: postedAt(root) }))
+      const timestamped = loadedRoots
+        .map((root) => ({ root, timeInfo: noteTimeInfo(root) }));
+      timestamped
+        .filter(({ timeInfo }) => timeInfo.timestamp === null)
+        .forEach(({ root, timeInfo }) => logTimeDecision(identity(root) || "(unknown)", timeInfo, "timestamp-unavailable"));
+      const selected = timestamped
+        .filter(({ timeInfo }) => timeInfo.timestamp !== null)
+        .map(({ root, timeInfo }) => ({ root, timestamp: timeInfo.timestamp }))
         .sort((a, b) => b.timestamp - a.timestamp)
         .slice(0, initialNoteCount);
 
-      latestAcceptedTimestamp = Math.max(...selected.map(({ timestamp }) => timestamp));
-      if (enabled) {
+      latestAcceptedTimestamp = selected.length
+        ? Math.max(...selected.map(({ timestamp }) => timestamp))
+        : 0;
+      if (enabled && selected.length) {
         selected
           .sort((a, b) => a.timestamp - b.timestamp)
           .forEach(({ root }) => processNote(root, true));
@@ -199,12 +291,14 @@
     enabled: true,
     initialNoteCount: 5,
     maxReadLength: 64,
-    removeUrls: true
+    removeUrls: true,
+    maxNoteAgeSeconds: 300
   }).then((settings) => {
     enabled = settings.enabled;
     initialNoteCount = Math.max(0, Math.floor(Number(settings.initialNoteCount) || 0));
     maxReadLength = Math.max(1, Math.floor(Number(settings.maxReadLength) || 64));
     removeUrls = settings.removeUrls;
+    maxNoteAgeSeconds = Math.max(0, Number(settings.maxNoteAgeSeconds) || 0);
     initialize();
   });
   chrome.storage.onChanged.addListener((changes, area) => {
@@ -212,6 +306,7 @@
     if (area === "sync" && changes.initialNoteCount) initialNoteCount = Math.max(0, Math.floor(Number(changes.initialNoteCount.newValue) || 0));
     if (area === "sync" && changes.maxReadLength) maxReadLength = Math.max(1, Math.floor(Number(changes.maxReadLength.newValue) || 64));
     if (area === "sync" && changes.removeUrls) removeUrls = changes.removeUrls.newValue;
+    if (area === "sync" && changes.maxNoteAgeSeconds) maxNoteAgeSeconds = Math.max(0, Number(changes.maxNoteAgeSeconds.newValue) || 0);
   });
 
   const observer = new MutationObserver((mutations) => {
