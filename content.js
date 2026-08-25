@@ -5,6 +5,7 @@
   const seenIds = new Set();
   const seenElements = new WeakSet();
   const pendingRoots = new Set();
+  const mutationCandidates = new Map();
   let ready = false;
   let enabled = true;
   let initialNoteCount = 5;
@@ -12,12 +13,23 @@
   let removeUrls = true;
   let latestAcceptedTimestamp = 0;
   let maxNoteAgeSeconds = 300;
+  let maxQueueSize = 10;
+  let candidateFlushTimer = null;
+  const LATE_ARRIVAL_TOLERANCE_MS = 2000;
 
   const visible = (element) => {
     if (!(element instanceof HTMLElement)) return false;
     const style = getComputedStyle(element);
     return style.display !== "none" && style.visibility !== "hidden" &&
       style.opacity !== "0" && element.getClientRects().length > 0;
+  };
+
+  const intersectsViewport = (element) => {
+    if (!visible(element)) return false;
+    const rect = element.getBoundingClientRect();
+    return rect.bottom > 0 && rect.right > 0 &&
+      rect.top < document.documentElement.clientHeight &&
+      rect.left < document.documentElement.clientWidth;
   };
 
   function noteRootFrom(node) {
@@ -218,7 +230,8 @@
     markSeen(root);
     const id = identity(root) || "(unknown)";
     console.debug(`${LOG} new note: ${id}`);
-    if (!initial && timestamp !== null && timestamp < latestAcceptedTimestamp) {
+    if (!initial && timestamp !== null &&
+        timestamp < latestAcceptedTimestamp - LATE_ARRIVAL_TOLERANCE_MS) {
       logTimeDecision(id, timeInfo, "stale");
       console.debug(`${LOG} skipped older note: ${id}`);
       return;
@@ -268,6 +281,69 @@
     return roots;
   }
 
+  function discardCandidate(root, timeInfo, decision) {
+    markSeen(root);
+    logTimeDecision(identity(root) || "(unknown)", timeInfo, decision);
+  }
+
+  function flushMutationCandidates() {
+    candidateFlushTimer = null;
+    const candidates = [...mutationCandidates.values()];
+    mutationCandidates.clear();
+    const accepted = [];
+
+    candidates.forEach((root, domOrder) => {
+      if (!root.isConnected || !isTimelineNote(root)) return;
+      const id = identity(root);
+      if (!id || wasSeen(root)) return;
+      const timeInfo = noteTimeInfo(root);
+      const timestamp = timeInfo.timestamp;
+      const ageSeconds = timestamp === null ? null : (Date.now() - timestamp) / 1000;
+
+      if (!intersectsViewport(root)) {
+        discardCandidate(root, timeInfo, "outside-viewport");
+        return;
+      }
+      if (timestamp === null && maxNoteAgeSeconds > 0) {
+        discardCandidate(root, timeInfo, "timestamp-unavailable");
+        return;
+      }
+      if (maxNoteAgeSeconds > 0 && ageSeconds > maxNoteAgeSeconds) {
+        discardCandidate(root, timeInfo, "stale");
+        return;
+      }
+      if (timestamp !== null &&
+          timestamp < latestAcceptedTimestamp - LATE_ARRIVAL_TOLERANCE_MS) {
+        discardCandidate(root, timeInfo, "stale");
+        return;
+      }
+      accepted.push({ root, timestamp, domOrder });
+    });
+
+    accepted.sort((a, b) => {
+      const aTime = a.timestamp === null ? -Infinity : a.timestamp;
+      const bTime = b.timestamp === null ? -Infinity : b.timestamp;
+      return bTime - aTime || a.domOrder - b.domOrder;
+    });
+    const limit = Math.max(0, Math.floor(Number(maxQueueSize) || 0));
+    const selected = accepted.slice(0, limit);
+    accepted.slice(limit).forEach(({ root }) => {
+      discardCandidate(root, noteTimeInfo(root), "candidate-limit");
+    });
+
+    // 選択は最新順、キュー投入は時系列を保つため古い順とする。
+    selected.reverse().forEach(({ root }) => processNote(root));
+  }
+
+  function collectMutationCandidate(root) {
+    const id = identity(root);
+    if (!id || seenIds.has(id) || seenElements.has(root)) return;
+    mutationCandidates.set(id, root);
+    if (!candidateFlushTimer) {
+      candidateFlushTimer = setTimeout(flushMutationCandidates, 150);
+    }
+  }
+
   function initialize() {
     const loadedRoots = [];
     const uniqueRoots = new Set();
@@ -306,7 +382,7 @@
       // 初期読み上げなし、または初期ノートなしなら、初期化時点より古い遅延描画を除外する。
       latestAcceptedTimestamp = Date.now();
     }
-    pendingRoots.forEach(processNote);
+    pendingRoots.forEach(collectMutationCandidate);
     pendingRoots.clear();
   }
 
@@ -315,13 +391,15 @@
     initialNoteCount: 5,
     maxReadLength: 64,
     removeUrls: true,
-    maxNoteAgeSeconds: 300
+    maxNoteAgeSeconds: 300,
+    maxQueueSize: 10
   }).then((settings) => {
     enabled = settings.enabled;
     initialNoteCount = Math.max(0, Math.floor(Number(settings.initialNoteCount) || 0));
     maxReadLength = Math.max(1, Math.floor(Number(settings.maxReadLength) || 64));
     removeUrls = settings.removeUrls;
     maxNoteAgeSeconds = Math.max(0, Number(settings.maxNoteAgeSeconds) || 0);
+    maxQueueSize = Math.max(0, Math.floor(Number(settings.maxQueueSize) || 0));
     initialize();
   });
   chrome.storage.onChanged.addListener((changes, area) => {
@@ -330,6 +408,7 @@
     if (area === "sync" && changes.maxReadLength) maxReadLength = Math.max(1, Math.floor(Number(changes.maxReadLength.newValue) || 64));
     if (area === "sync" && changes.removeUrls) removeUrls = changes.removeUrls.newValue;
     if (area === "sync" && changes.maxNoteAgeSeconds) maxNoteAgeSeconds = Math.max(0, Number(changes.maxNoteAgeSeconds.newValue) || 0);
+    if (area === "sync" && changes.maxQueueSize) maxQueueSize = Math.max(0, Math.floor(Number(changes.maxQueueSize.newValue) || 0));
   });
 
   const observer = new MutationObserver((mutations) => {
@@ -341,10 +420,18 @@
       roots.forEach((root) => pendingRoots.add(root));
       return;
     }
-    // requestAnimationFrameは背景タブで停止するため、microtaskで同一DOM更新後に読む。
-    if (roots.size) queueMicrotask(() => roots.forEach(processNote));
+    roots.forEach(collectMutationCandidate);
   });
 
   observer.observe(document.body, { childList: true, subtree: true });
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState !== "visible") return;
+    // 復帰時に背景中の候補を遡って読まず、復帰後の投稿だけを優先する。
+    mutationCandidates.forEach((root) => markSeen(root));
+    mutationCandidates.clear();
+    if (candidateFlushTimer) clearTimeout(candidateFlushTimer);
+    candidateFlushTimer = null;
+    latestAcceptedTimestamp = Math.max(latestAcceptedTimestamp, Date.now());
+  });
   console.info(`${LOG} initialized`);
 })();

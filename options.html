@@ -65,6 +65,15 @@
         <small>これより古いノートはキューへ入れません。0なら無制限です。</small>
       </label>
     </div>
+    <label>同時読み上げ数
+      <select id="maxConcurrentReads" required>
+        <option value="1">1</option>
+        <option value="2">2</option>
+        <option value="3">3</option>
+        <option value="4">4</option>
+      </select>
+      <small>1では従来どおり1件ずつ読み上げます。</small>
+    </label>
     <fieldset>
       <legend>カスタム読み上げ</legend>
       <small>MisskeyユーザーIDごとに話者を指定します。ローカルは @user、リモートは @user@host の形式で入力してください。</small>

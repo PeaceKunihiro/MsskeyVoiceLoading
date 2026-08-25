@@ -16,20 +16,23 @@ const DEFAULTS = {
   customVoices: [],
   randomVoiceEnabled: false,
   randomVoiceStyles: [],
-  voiceProfiles: {}
+  voiceProfiles: {},
+  maxConcurrentReads: 1
 };
 
 const speechQueue = [];
-let processingQueue = false;
+let activeReadCount = 0;
 let creatingOffscreenDocument = null;
-let activeAbortController = null;
+const activeAbortControllers = new Set();
 let cancellationGeneration = 0;
 let queueSequence = 0;
 let queueStartTimer = null;
+let playbackSequence = 0;
 const speakerCache = new Map();
 let queuePolicy = {
   maxQueueSize: DEFAULTS.maxQueueSize,
-  maxNoteAgeSeconds: DEFAULTS.maxNoteAgeSeconds
+  maxNoteAgeSeconds: DEFAULTS.maxNoteAgeSeconds,
+  maxConcurrentReads: DEFAULTS.maxConcurrentReads
 };
 
 class SpeechCancelledError extends Error {}
@@ -47,7 +50,7 @@ function normalizeEngineUrl(value) {
 
 async function voicevoxFetch(baseUrl, path, options = {}, generation = cancellationGeneration) {
   const controller = new AbortController();
-  activeAbortController = controller;
+  activeAbortControllers.add(controller);
   let timedOut = false;
   const timeout = setTimeout(() => {
     timedOut = true;
@@ -70,7 +73,7 @@ async function voicevoxFetch(baseUrl, path, options = {}, generation = cancellat
     throw error;
   } finally {
     clearTimeout(timeout);
-    if (activeAbortController === controller) activeAbortController = null;
+    activeAbortControllers.delete(controller);
   }
 }
 
@@ -149,6 +152,7 @@ async function playAudio(buffer, generation, pan) {
   const response = await chrome.runtime.sendMessage({
     target: "offscreen",
     type: "playAudio",
+    playbackId: `speech-${Date.now()}-${playbackSequence++}`,
     audioDataUrl: arrayBufferToDataUrl(buffer),
     pan
   });
@@ -283,7 +287,7 @@ function enqueueSpeech(text, postedAt, noteId, rawTime, userId) {
       dropped.resolve();
       console.info("[MisskeyReader] dropped oldest queued note");
     }
-    if (speechQueue.length && !processingQueue && !queueStartTimer) {
+    if (speechQueue.length && !queueStartTimer) {
       // 同一DOM更新で届く複数ノートを集約してから投稿時刻順に処理する。
       queueStartTimer = setTimeout(() => {
         queueStartTimer = null;
@@ -293,24 +297,31 @@ function enqueueSpeech(text, postedAt, noteId, rawTime, userId) {
   });
 }
 
-async function processQueue() {
-  if (processingQueue) return;
-  processingQueue = true;
-  while (speechQueue.length) {
-    const item = speechQueue.shift();
-    try {
-      if (!checkFreshness(item, "before-playback")) {
-        item.resolve();
-        continue;
-      }
-      await speakNow(item.text, item.generation, item.userId);
-      item.resolve();
-    } catch (error) {
-      if (error instanceof SpeechCancelledError) item.resolve();
-      else item.reject(error);
-    }
+async function runQueueItem(item) {
+  try {
+    await speakNow(item.text, item.generation, item.userId);
+    item.resolve();
+  } catch (error) {
+    if (error instanceof SpeechCancelledError) item.resolve();
+    else item.reject(error);
+  } finally {
+    activeReadCount -= 1;
+    processQueue();
   }
-  processingQueue = false;
+}
+
+function processQueue() {
+  const concurrency = Math.min(4, Math.max(1,
+    Math.floor(Number(queuePolicy.maxConcurrentReads) || 1)));
+  while (activeReadCount < concurrency && speechQueue.length) {
+    const item = speechQueue.shift();
+    if (!checkFreshness(item, "before-playback")) {
+      item.resolve();
+      continue;
+    }
+    activeReadCount += 1;
+    runQueueItem(item);
+  }
 }
 
 async function getSpeakers(voicevoxUrl) {
@@ -328,7 +339,7 @@ async function stopSpeech() {
   cancellationGeneration += 1;
   if (queueStartTimer) clearTimeout(queueStartTimer);
   queueStartTimer = null;
-  if (activeAbortController) activeAbortController.abort();
+  activeAbortControllers.forEach((controller) => controller.abort());
   while (speechQueue.length) speechQueue.shift().resolve();
   console.info("[MisskeyReader] queue cleared");
 
@@ -380,6 +391,10 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (area === "sync" && changes.maxNoteAgeSeconds) {
     queuePolicy.maxNoteAgeSeconds = changes.maxNoteAgeSeconds.newValue;
   }
+  if (area === "sync" && changes.maxConcurrentReads) {
+    queuePolicy.maxConcurrentReads = changes.maxConcurrentReads.newValue;
+    processQueue();
+  }
 });
 
 chrome.runtime.onStartup.addListener(async () => {
@@ -390,5 +405,6 @@ chrome.runtime.onStartup.addListener(async () => {
 chrome.storage.sync.get({ enabled: true }).then(({ enabled }) => applyEnabledState(enabled));
 chrome.storage.sync.get({
   maxQueueSize: DEFAULTS.maxQueueSize,
-  maxNoteAgeSeconds: DEFAULTS.maxNoteAgeSeconds
+  maxNoteAgeSeconds: DEFAULTS.maxNoteAgeSeconds,
+  maxConcurrentReads: DEFAULTS.maxConcurrentReads
 }).then((settings) => { queuePolicy = settings; });

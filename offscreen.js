@@ -1,15 +1,14 @@
 "use strict";
 
 let audioContext = null;
-let currentSource = null;
-let finishCurrentPlayback = null;
+const activePlaybacks = new Map();
 
 const clamp = (value, minimum, maximum, fallback) => {
   const numeric = Number(value);
   return Number.isFinite(numeric) ? Math.min(maximum, Math.max(minimum, numeric)) : fallback;
 };
 
-async function play(audioDataUrl, pan) {
+async function play(playbackId, audioDataUrl, pan) {
   if (!audioContext) audioContext = new AudioContext();
   if (audioContext.state === "suspended") await audioContext.resume();
   const encodedAudio = await fetch(audioDataUrl).then((response) => response.arrayBuffer());
@@ -21,7 +20,6 @@ async function play(audioDataUrl, pan) {
     source.buffer = audioBuffer;
     panner.pan.value = clamp(pan, -1, 1, 0);
     source.connect(panner).connect(audioContext.destination);
-    currentSource = source;
 
     let settled = false;
     const finish = (error) => {
@@ -29,12 +27,11 @@ async function play(audioDataUrl, pan) {
       settled = true;
       source.disconnect();
       panner.disconnect();
-      if (currentSource === source) currentSource = null;
-      if (finishCurrentPlayback === finish) finishCurrentPlayback = null;
+      activePlaybacks.delete(playbackId);
       if (error) reject(error);
       else resolve();
     };
-    finishCurrentPlayback = finish;
+    activePlaybacks.set(playbackId, { source, finish });
     source.addEventListener("ended", () => finish(), { once: true });
     try {
       source.start();
@@ -44,19 +41,23 @@ async function play(audioDataUrl, pan) {
   });
 }
 
+function stopAll() {
+  const playbacks = [...activePlaybacks.values()];
+  for (const { source, finish } of playbacks) {
+    finish();
+    try { source.stop(); } catch { /* すでに停止済み */ }
+  }
+}
+
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.target !== "offscreen") return;
   if (message.type === "stopAudio") {
-    const source = currentSource;
-    if (finishCurrentPlayback) finishCurrentPlayback();
-    if (source) {
-      try { source.stop(); } catch { /* すでに停止済み */ }
-    }
+    stopAll();
     sendResponse({ ok: true });
     return;
   }
   if (message.type !== "playAudio") return;
-  play(message.audioDataUrl, message.pan)
+  play(message.playbackId, message.audioDataUrl, message.pan)
     .then(() => sendResponse({ ok: true }))
     .catch((error) => sendResponse({ ok: false, error: error.message }));
   return true;

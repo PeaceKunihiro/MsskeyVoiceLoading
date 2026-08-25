@@ -16,7 +16,8 @@ const DEFAULTS = {
   customVoices: [],
   randomVoiceEnabled: false,
   randomVoiceStyles: [],
-  voiceProfiles: {}
+  voiceProfiles: {},
+  maxConcurrentReads: 1
 };
 
 const complexFields = new Set(["customVoices", "randomVoiceStyles", "voiceProfiles"]);
