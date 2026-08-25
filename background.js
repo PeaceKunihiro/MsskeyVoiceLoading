@@ -12,7 +12,8 @@ const DEFAULTS = {
   maxReadLength: 64,
   removeUrls: true,
   maxQueueSize: 10,
-  maxNoteAgeSeconds: 300
+  maxNoteAgeSeconds: 300,
+  customVoices: []
 };
 
 const speechQueue = [];
@@ -22,6 +23,7 @@ let activeAbortController = null;
 let cancellationGeneration = 0;
 let queueSequence = 0;
 let queueStartTimer = null;
+const speakerCache = new Map();
 let queuePolicy = {
   maxQueueSize: DEFAULTS.maxQueueSize,
   maxNoteAgeSeconds: DEFAULTS.maxNoteAgeSeconds
@@ -69,8 +71,7 @@ async function voicevoxFetch(baseUrl, path, options = {}, generation = cancellat
   }
 }
 
-async function synthesize(text, settings, generation) {
-  const speaker = Number(settings.speaker);
+async function synthesize(text, settings, generation, speaker) {
   console.info("[MisskeyReader] VOICEVOX request");
   const queryParams = new URLSearchParams({ text, speaker: String(speaker) });
   const queryResponse = await voicevoxFetch(
@@ -152,11 +153,46 @@ async function playAudio(buffer, generation) {
   console.info("[MisskeyReader] playback finished");
 }
 
-async function speakNow(text, generation) {
+function normalizeUserId(value) {
+  const trimmed = typeof value === "string" ? value.trim() : "";
+  if (!trimmed) return "";
+  return (trimmed.startsWith("@") ? trimmed : `@${trimmed}`).toLowerCase();
+}
+
+async function validSpeakerIds(voicevoxUrl) {
+  const key = normalizeEngineUrl(voicevoxUrl);
+  const cached = speakerCache.get(key);
+  if (cached && Date.now() - cached.updatedAt < 5 * 60 * 1000) return cached.ids;
+  const speakers = await getSpeakers(voicevoxUrl);
+  const ids = new Set(speakers.flatMap((character) =>
+    (character.styles || []).map((style) => Number(style.id)).filter(Number.isFinite)
+  ));
+  speakerCache.set(key, { ids, updatedAt: Date.now() });
+  return ids;
+}
+
+async function selectSpeaker(settings, userId) {
+  const fallback = Number(settings.speaker);
+  const normalized = normalizeUserId(userId);
+  if (!normalized || !Array.isArray(settings.customVoices)) return fallback;
+  const mapping = settings.customVoices.find((entry) => normalizeUserId(entry?.userId) === normalized);
+  const customSpeaker = Number(mapping?.speaker);
+  if (!mapping || !Number.isInteger(customSpeaker) || customSpeaker < 0) return fallback;
+  try {
+    const ids = await validSpeakerIds(settings.voicevoxUrl);
+    return ids.has(customSpeaker) ? customSpeaker : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+async function speakNow(text, generation, userId) {
   const settings = await chrome.storage.sync.get(DEFAULTS);
   if (!settings.enabled || generation !== cancellationGeneration) return;
   try {
-    const audio = await synthesize(text, settings, generation);
+    const speaker = await selectSpeaker(settings, userId);
+    if (generation !== cancellationGeneration) throw new SpeechCancelledError();
+    const audio = await synthesize(text, settings, generation, speaker);
     console.info("[MisskeyReader] VOICEVOX connected");
     await playAudio(audio, generation);
   } catch (error) {
@@ -188,13 +224,14 @@ function checkFreshness(item, stage) {
   return decision === "accepted";
 }
 
-function enqueueSpeech(text, postedAt, noteId, rawTime) {
+function enqueueSpeech(text, postedAt, noteId, rawTime, userId) {
   const numericTimestamp = postedAt === null || postedAt === undefined
     ? NaN
     : Number(postedAt);
   const candidate = {
     text,
     noteId: noteId || "(unknown)",
+    userId: normalizeUserId(userId) || null,
     rawTime: rawTime || {},
     postedAt: Number.isFinite(numericTimestamp) ? numericTimestamp : NaN
   };
@@ -240,7 +277,7 @@ async function processQueue() {
         item.resolve();
         continue;
       }
-      await speakNow(item.text, item.generation);
+      await speakNow(item.text, item.generation, item.userId);
       item.resolve();
     } catch (error) {
       if (error instanceof SpeechCancelledError) item.resolve();
@@ -296,7 +333,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   const isTest = message?.type === "testSpeak";
   if ((!isTest && message?.type !== "speak") || typeof message.text !== "string") return;
-  enqueueSpeech(message.text, message.postedAt, message.noteId, message.rawTime)
+  enqueueSpeech(message.text, message.postedAt, message.noteId, message.rawTime, message.userId)
     .then(() => sendResponse({ ok: true }))
     .catch((error) => sendResponse({ ok: false, error: error.message }));
   return true;

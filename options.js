@@ -12,15 +12,19 @@ const DEFAULTS = {
   maxReadLength: 64,
   removeUrls: true,
   maxQueueSize: 10,
-  maxNoteAgeSeconds: 300
+  maxNoteAgeSeconds: 300,
+  customVoices: []
 };
 
-const fields = Object.keys(DEFAULTS);
+const fields = Object.keys(DEFAULTS).filter((name) => name !== "customVoices");
 const form = document.querySelector("#settings");
 const status = document.querySelector("#status");
 const speakerSelect = document.querySelector("#speaker");
 const testButton = document.querySelector("#test");
 const loadSpeakersButton = document.querySelector("#loadSpeakers");
+const customVoicesContainer = document.querySelector("#customVoices");
+const addCustomVoiceButton = document.querySelector("#addCustomVoice");
+let availableStyles = [];
 
 function showStatus(message, kind = "") {
   status.value = message;
@@ -47,6 +51,14 @@ function readSettings() {
     result[name] = input.type === "checkbox" ? input.checked :
       input.type === "number" || input.tagName === "SELECT" ? Number(input.value) : input.value.trim().replace(/\/$/, "");
   });
+  const mappings = new Map();
+  customVoicesContainer.querySelectorAll(".custom-voice-row").forEach((row) => {
+    const rawUserId = row.querySelector(".custom-user-id").value.trim();
+    if (!rawUserId) return;
+    const userId = (rawUserId.startsWith("@") ? rawUserId : `@${rawUserId}`).toLowerCase();
+    mappings.set(userId, { userId, speaker: Number(row.querySelector(".custom-speaker").value) });
+  });
+  result.customVoices = [...mappings.values()];
   return result;
 }
 
@@ -66,19 +78,56 @@ async function ensureEnginePermission() {
   return granted;
 }
 
-function populateSpeakers(speakers, selectedId) {
-  speakerSelect.textContent = "";
-  for (const character of speakers) {
-    for (const style of character.styles || []) {
+function populateSpeakerSelect(select, selectedId) {
+  select.textContent = "";
+  for (const style of availableStyles) {
       const option = document.createElement("option");
       option.value = style.id;
-      option.textContent = `${character.name} / ${style.name}（${style.id}）`;
-      speakerSelect.append(option);
-    }
+      option.textContent = `${style.characterName} / ${style.name}（${style.id}）`;
+      select.append(option);
   }
-  if ([...speakerSelect.options].some((option) => Number(option.value) === Number(selectedId))) {
-    speakerSelect.value = String(selectedId);
+  if (![...select.options].some((option) => Number(option.value) === Number(selectedId))) {
+    const option = document.createElement("option");
+    option.value = selectedId;
+    option.textContent = `保存済みスタイル ID ${selectedId}（現在利用不可）`;
+    select.append(option);
   }
+  select.value = String(selectedId);
+}
+
+function populateSpeakers(speakers, selectedId) {
+  availableStyles = speakers.flatMap((character) =>
+    (character.styles || []).map((style) => ({ ...style, characterName: character.name }))
+  );
+  populateSpeakerSelect(speakerSelect, selectedId);
+  customVoicesContainer.querySelectorAll(".custom-speaker").forEach((select) => {
+    populateSpeakerSelect(select, select.value);
+  });
+}
+
+function addCustomVoiceRow(mapping = { userId: "", speaker: speakerSelect.value || 3 }) {
+  const row = document.createElement("div");
+  row.className = "custom-voice-row";
+
+  const userInput = document.createElement("input");
+  userInput.className = "custom-user-id";
+  userInput.type = "text";
+  userInput.placeholder = "@user または @user@host";
+  userInput.value = mapping.userId || "";
+  userInput.required = true;
+
+  const select = document.createElement("select");
+  select.className = "custom-speaker";
+  select.required = true;
+  populateSpeakerSelect(select, mapping.speaker);
+
+  const removeButton = document.createElement("button");
+  removeButton.type = "button";
+  removeButton.textContent = "削除";
+  removeButton.addEventListener("click", () => row.remove());
+
+  row.append(userInput, select, removeButton);
+  customVoicesContainer.append(row);
 }
 
 async function loadSpeakers() {
@@ -118,6 +167,8 @@ async function restore() {
       input.value = String(settings[name]);
     } else input.value = settings[name];
   });
+  customVoicesContainer.textContent = "";
+  for (const mapping of settings.customVoices || []) addCustomVoiceRow(mapping);
   validateEngineUrl();
 }
 
@@ -127,6 +178,7 @@ document.querySelector("#enabled").addEventListener("change", async (event) => {
   showStatus(event.target.checked ? "読み上げをONにしました。" : "読み上げをOFFにしました。", "success");
 });
 loadSpeakersButton.addEventListener("click", loadSpeakers);
+addCustomVoiceButton.addEventListener("click", () => addCustomVoiceRow());
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();

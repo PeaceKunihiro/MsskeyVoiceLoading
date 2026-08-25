@@ -15,6 +15,8 @@
     small { opacity: .75; }
     .row { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; }
     .speaker-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: end; }
+    fieldset { display: grid; gap: 12px; padding: 16px; }
+    .custom-voice-row { display: grid; grid-template-columns: minmax(130px, 1fr) minmax(220px, 2fr) auto; gap: 8px; }
     #status { min-height: 2.5em; white-space: pre-line; }
     #status[data-kind="success"] { color: #48a868; }
     #status[data-kind="error"] { color: #d95757; }
@@ -60,6 +62,12 @@
         <small>これより古いノートはキューへ入れません。0なら無制限です。</small>
       </label>
     </div>
+    <fieldset>
+      <legend>カスタム読み上げ</legend>
+      <small>MisskeyユーザーIDごとに話者を指定します。ローカルは @user、リモートは @user@host の形式で入力してください。</small>
+      <div id="customVoices"></div>
+      <button id="addCustomVoice" type="button">対応を追加</button>
+    </fieldset>
     <div class="row">
       <button type="submit">保存</button>
       <button id="test" type="button">テスト読み上げ</button>

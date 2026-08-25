@@ -101,6 +101,28 @@
     return root.getAttribute("data-scroll-anchor") || "";
   }
 
+  function noteUserId(root) {
+    const article = root.matches("article") ? root : root.querySelector(":scope article");
+    if (!article) return null;
+    const profileLink = [...article.querySelectorAll("a[href]")].find((link) => {
+      if (link.closest("article") !== article) return false;
+      if (link.closest("._selectable, [style*='white-space: pre-wrap'], [style*='white-space:pre-wrap']")) return false;
+      try {
+        const path = decodeURIComponent(new URL(link.href, location.origin).pathname);
+        return /^\/@[^/]+\/?$/.test(path);
+      } catch {
+        return false;
+      }
+    });
+    if (!profileLink) return null;
+    try {
+      const path = decodeURIComponent(new URL(profileLink.href, location.origin).pathname);
+      return path.replace(/^\//, "").replace(/\/$/, "");
+    } catch {
+      return null;
+    }
+  }
+
   function parsePostedAt(value) {
     if (typeof value !== "string" || !value.trim()) return null;
     const raw = value.trim();
@@ -226,6 +248,7 @@
       type: "speak",
       text: result.text,
       noteId: id,
+      userId: noteUserId(root),
       postedAt: timestamp,
       rawTime: timeInfo.raw
     }).then((response) => {
