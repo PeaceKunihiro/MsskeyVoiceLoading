@@ -20,6 +20,7 @@
     #randomVoiceList { display: grid; gap: 8px; max-height: 360px; overflow: auto; }
     .random-voice-row { display: grid; grid-template-columns: minmax(220px, 2fr) 110px 110px; gap: 8px; align-items: center; }
     .random-voice-row > label:first-child { display: flex; flex-direction: row; align-items: center; gap: 8px; }
+    .instance-row { display: grid; grid-template-columns: 1fr auto auto; gap: 8px; align-items: center; }
     #status { min-height: 2.5em; white-space: pre-line; }
     #status[data-kind="success"] { color: #48a868; }
     #status[data-kind="error"] { color: #d95757; }
@@ -29,6 +30,17 @@
   <h1>Misskey Reader 設定</h1>
   <form id="settings">
     <label class="checkbox"><input id="enabled" type="checkbox">読み上げを有効にする</label>
+    <fieldset>
+      <legend>読み上げ対象Misskeyインスタンス</legend>
+      <div class="speaker-row">
+        <label>インスタンスURL
+          <input id="misskeyInstanceUrl" type="url" placeholder="https://misskey.example.com">
+        </label>
+        <button id="addMisskeyInstance" type="button">追加</button>
+      </div>
+      <div id="misskeyInstances"></div>
+      <small>URLはorigin単位で保存します。追加後、開いているMisskeyタブを再読み込みしてください。</small>
+    </fieldset>
     <label>VOICEVOX ENGINE URL
       <input id="voicevoxUrl" type="url" required placeholder="http://127.0.0.1:50021">
       <small>初期値はこのPC上のVOICEVOXです。別PCを指定すると、その接続先への権限確認が表示されます。</small>

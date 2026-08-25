@@ -17,8 +17,12 @@ const DEFAULTS = {
   randomVoiceEnabled: false,
   randomVoiceStyles: [],
   voiceProfiles: {},
-  maxConcurrentReads: 1
+  maxConcurrentReads: 1,
+  misskeyInstances: ["https://misskey.niri.la"]
 };
+
+const CONTENT_SCRIPT_ID = "misskey-reader-content";
+let contentScriptSyncPromise = Promise.resolve();
 
 const speechQueue = [];
 let activeReadCount = 0;
@@ -36,6 +40,45 @@ let queuePolicy = {
 };
 
 class SpeechCancelledError extends Error {}
+
+function normalizeOrigin(value) {
+  try {
+    const url = new URL(value);
+    if (!["http:", "https:"].includes(url.protocol)) return null;
+    return url.origin;
+  } catch {
+    return null;
+  }
+}
+
+async function performMisskeyContentScriptSync() {
+  const { misskeyInstances } = await chrome.storage.sync.get({
+    misskeyInstances: DEFAULTS.misskeyInstances
+  });
+  const origins = [...new Set((Array.isArray(misskeyInstances) ? misskeyInstances : [])
+    .map(normalizeOrigin)
+    .filter(Boolean))];
+  const permitted = [];
+  for (const origin of origins) {
+    if (await chrome.permissions.contains({ origins: [`${origin}/*`] })) permitted.push(`${origin}/*`);
+  }
+  await chrome.scripting.unregisterContentScripts({ ids: [CONTENT_SCRIPT_ID] }).catch(() => {});
+  if (!permitted.length) return;
+  await chrome.scripting.registerContentScripts([{
+    id: CONTENT_SCRIPT_ID,
+    matches: permitted,
+    js: ["content.js"],
+    runAt: "document_idle",
+    persistAcrossSessions: true
+  }]);
+}
+
+function syncMisskeyContentScript() {
+  contentScriptSyncPromise = contentScriptSyncPromise
+    .catch(() => {})
+    .then(performMisskeyContentScriptSync);
+  return contentScriptSyncPromise;
+}
 
 function normalizeEngineUrl(value) {
   const url = new URL(value);
@@ -361,6 +404,12 @@ async function applyEnabledState(enabled) {
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.target === "offscreen") return;
+  if (message?.type === "refreshMisskeyScripts") {
+    syncMisskeyContentScript()
+      .then(() => sendResponse({ ok: true }))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
   if (message?.type === "getSpeakers" && typeof message.voicevoxUrl === "string") {
     getSpeakers(message.voicevoxUrl)
       .then((speakers) => sendResponse({ ok: true, speakers }))
@@ -395,6 +444,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
     queuePolicy.maxConcurrentReads = changes.maxConcurrentReads.newValue;
     processQueue();
   }
+  if (area === "sync" && changes.misskeyInstances) syncMisskeyContentScript();
 });
 
 chrome.runtime.onStartup.addListener(async () => {
@@ -408,3 +458,7 @@ chrome.storage.sync.get({
   maxNoteAgeSeconds: DEFAULTS.maxNoteAgeSeconds,
   maxConcurrentReads: DEFAULTS.maxConcurrentReads
 }).then((settings) => { queuePolicy = settings; });
+
+chrome.runtime.onInstalled.addListener(syncMisskeyContentScript);
+chrome.runtime.onStartup.addListener(syncMisskeyContentScript);
+syncMisskeyContentScript();

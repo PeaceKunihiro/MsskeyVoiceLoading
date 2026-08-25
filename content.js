@@ -15,6 +15,7 @@
   let maxNoteAgeSeconds = 300;
   let maxQueueSize = 10;
   let candidateFlushTimer = null;
+  let instanceEnabled = false;
   const LATE_ARRIVAL_TOLERANCE_MS = 2000;
 
   const visible = (element) => {
@@ -230,6 +231,7 @@
     markSeen(root);
     const id = identity(root) || "(unknown)";
     console.debug(`${LOG} new note: ${id}`);
+    if (!instanceEnabled) return;
     if (!initial && timestamp !== null &&
         timestamp < latestAcceptedTimestamp - LATE_ARRIVAL_TOLERANCE_MS) {
       logTimeDecision(id, timeInfo, "stale");
@@ -336,6 +338,10 @@
   }
 
   function collectMutationCandidate(root) {
+    if (!instanceEnabled) {
+      if (root) markSeen(root);
+      return;
+    }
     const id = identity(root);
     if (!id || seenIds.has(id) || seenElements.has(root)) return;
     mutationCandidates.set(id, root);
@@ -373,7 +379,7 @@
       latestAcceptedTimestamp = selected.length
         ? Math.max(...selected.map(({ timestamp }) => timestamp))
         : 0;
-      if (enabled && selected.length) {
+      if (instanceEnabled && enabled && selected.length) {
         selected
           .sort((a, b) => a.timestamp - b.timestamp)
           .forEach(({ root }) => processNote(root, true));
@@ -392,7 +398,8 @@
     maxReadLength: 64,
     removeUrls: true,
     maxNoteAgeSeconds: 300,
-    maxQueueSize: 10
+    maxQueueSize: 10,
+    misskeyInstances: ["https://misskey.niri.la"]
   }).then((settings) => {
     enabled = settings.enabled;
     initialNoteCount = Math.max(0, Math.floor(Number(settings.initialNoteCount) || 0));
@@ -400,6 +407,10 @@
     removeUrls = settings.removeUrls;
     maxNoteAgeSeconds = Math.max(0, Number(settings.maxNoteAgeSeconds) || 0);
     maxQueueSize = Math.max(0, Math.floor(Number(settings.maxQueueSize) || 0));
+    instanceEnabled = (Array.isArray(settings.misskeyInstances) ? settings.misskeyInstances : [])
+      .some((value) => {
+        try { return new URL(value).origin === location.origin; } catch { return false; }
+      });
     initialize();
   });
   chrome.storage.onChanged.addListener((changes, area) => {
@@ -409,6 +420,24 @@
     if (area === "sync" && changes.removeUrls) removeUrls = changes.removeUrls.newValue;
     if (area === "sync" && changes.maxNoteAgeSeconds) maxNoteAgeSeconds = Math.max(0, Number(changes.maxNoteAgeSeconds.newValue) || 0);
     if (area === "sync" && changes.maxQueueSize) maxQueueSize = Math.max(0, Math.floor(Number(changes.maxQueueSize.newValue) || 0));
+    if (area === "sync" && changes.misskeyInstances) {
+      const wasEnabled = instanceEnabled;
+      instanceEnabled = (Array.isArray(changes.misskeyInstances.newValue)
+        ? changes.misskeyInstances.newValue
+        : []).some((value) => {
+          try { return new URL(value).origin === location.origin; } catch { return false; }
+        });
+      if (wasEnabled && !instanceEnabled) {
+        document.querySelectorAll("[data-scroll-anchor] > article, article").forEach((article) => {
+          markSeen(article.closest("[data-scroll-anchor]") || article);
+        });
+        mutationCandidates.clear();
+        if (candidateFlushTimer) clearTimeout(candidateFlushTimer);
+        candidateFlushTimer = null;
+      } else if (!wasEnabled && instanceEnabled) {
+        latestAcceptedTimestamp = Date.now();
+      }
+    }
   });
 
   const observer = new MutationObserver((mutations) => {

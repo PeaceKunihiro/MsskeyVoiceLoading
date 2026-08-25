@@ -17,10 +17,11 @@ const DEFAULTS = {
   randomVoiceEnabled: false,
   randomVoiceStyles: [],
   voiceProfiles: {},
-  maxConcurrentReads: 1
+  maxConcurrentReads: 1,
+  misskeyInstances: ["https://misskey.niri.la"]
 };
 
-const complexFields = new Set(["customVoices", "randomVoiceStyles", "voiceProfiles"]);
+const complexFields = new Set(["customVoices", "randomVoiceStyles", "voiceProfiles", "misskeyInstances"]);
 const fields = Object.keys(DEFAULTS).filter((name) => !complexFields.has(name));
 const form = document.querySelector("#settings");
 const status = document.querySelector("#status");
@@ -30,9 +31,13 @@ const loadSpeakersButton = document.querySelector("#loadSpeakers");
 const customVoicesContainer = document.querySelector("#customVoices");
 const addCustomVoiceButton = document.querySelector("#addCustomVoice");
 const randomVoiceList = document.querySelector("#randomVoiceList");
+const misskeyInstancesContainer = document.querySelector("#misskeyInstances");
+const misskeyInstanceUrlInput = document.querySelector("#misskeyInstanceUrl");
+const addMisskeyInstanceButton = document.querySelector("#addMisskeyInstance");
 let availableStyles = [];
 let storedRandomVoiceStyles = [];
 let storedVoiceProfiles = {};
+let storedMisskeyInstances = [];
 
 function showStatus(message, kind = "") {
   status.value = message;
@@ -67,6 +72,7 @@ function readSettings() {
     mappings.set(userId, { userId, speaker: Number(row.querySelector(".custom-speaker").value) });
   });
   result.customVoices = [...mappings.values()];
+  result.misskeyInstances = [...storedMisskeyInstances];
   const randomRows = [...randomVoiceList.querySelectorAll(".random-voice-row")];
   if (randomRows.length) {
     result.randomVoiceStyles = [];
@@ -86,6 +92,59 @@ function readSettings() {
     result.voiceProfiles = { ...storedVoiceProfiles };
   }
   return result;
+}
+
+function normalizeMisskeyOrigin(value) {
+  try {
+    const url = new URL(value.trim());
+    if (!["http:", "https:"].includes(url.protocol)) throw new Error();
+    return url.origin;
+  } catch {
+    return null;
+  }
+}
+
+async function refreshMisskeyScripts() {
+  await chrome.runtime.sendMessage({ type: "refreshMisskeyScripts" }).catch(() => {});
+}
+
+async function renderMisskeyInstances() {
+  misskeyInstancesContainer.textContent = "";
+  for (const origin of storedMisskeyInstances) {
+    const row = document.createElement("div");
+    row.className = "instance-row";
+    const label = document.createElement("span");
+    label.textContent = origin;
+    const pattern = `${origin}/*`;
+    const permitted = await chrome.permissions.contains({ origins: [pattern] });
+
+    const permissionButton = document.createElement("button");
+    permissionButton.type = "button";
+    permissionButton.textContent = permitted ? "許可済み" : "権限を許可";
+    permissionButton.disabled = permitted;
+    permissionButton.addEventListener("click", async () => {
+      if (await chrome.permissions.request({ origins: [pattern] })) {
+        await refreshMisskeyScripts();
+        await renderMisskeyInstances();
+      }
+    });
+
+    const removeButton = document.createElement("button");
+    removeButton.type = "button";
+    removeButton.textContent = "削除";
+    removeButton.addEventListener("click", async () => {
+      storedMisskeyInstances = storedMisskeyInstances.filter((value) => value !== origin);
+      await chrome.storage.sync.set({ misskeyInstances: storedMisskeyInstances });
+      const { voicevoxUrl } = await chrome.storage.sync.get({ voicevoxUrl: DEFAULTS.voicevoxUrl });
+      if (normalizeMisskeyOrigin(voicevoxUrl) !== origin) {
+        await chrome.permissions.remove({ origins: [pattern] });
+      }
+      await refreshMisskeyScripts();
+      await renderMisskeyInstances();
+    });
+    row.append(label, permissionButton, removeButton);
+    misskeyInstancesContainer.append(row);
+  }
 }
 
 function permissionPattern(value) {
@@ -244,6 +303,10 @@ async function restore() {
   storedVoiceProfiles = settings.voiceProfiles && typeof settings.voiceProfiles === "object"
     ? settings.voiceProfiles
     : {};
+  storedMisskeyInstances = [...new Set((Array.isArray(settings.misskeyInstances)
+    ? settings.misskeyInstances
+    : DEFAULTS.misskeyInstances).map(normalizeMisskeyOrigin).filter(Boolean))];
+  await renderMisskeyInstances();
   validateEngineUrl();
 }
 
@@ -254,6 +317,23 @@ document.querySelector("#enabled").addEventListener("change", async (event) => {
 });
 loadSpeakersButton.addEventListener("click", loadSpeakers);
 addCustomVoiceButton.addEventListener("click", () => addCustomVoiceRow());
+addMisskeyInstanceButton.addEventListener("click", async () => {
+  const origin = normalizeMisskeyOrigin(misskeyInstanceUrlInput.value);
+  if (!origin) {
+    showStatus("正しいMisskey URLを入力してください。", "error");
+    return;
+  }
+  const pattern = `${origin}/*`;
+  if (!await chrome.permissions.request({ origins: [pattern] })) {
+    showStatus("このインスタンスへのアクセス権限が必要です。", "error");
+    return;
+  }
+  storedMisskeyInstances = [...new Set([...storedMisskeyInstances, origin])];
+  await chrome.storage.sync.set({ misskeyInstances: storedMisskeyInstances });
+  misskeyInstanceUrlInput.value = "";
+  await renderMisskeyInstances();
+  showStatus("Misskeyインスタンスを追加しました。タブを再読み込みしてください。", "success");
+});
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
