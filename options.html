@@ -24,6 +24,7 @@
     #status { min-height: 2.5em; white-space: pre-line; }
     #status[data-kind="success"] { color: #48a868; }
     #status[data-kind="error"] { color: #d95757; }
+    .warning { color: #b45309; border: 1px solid currentColor; border-radius: 6px; padding: 10px; }
     dialog { max-width: 520px; border: 1px solid currentColor; border-radius: 8px; padding: 22px; }
     dialog::backdrop { background: rgb(0 0 0 / .55); }
     dialog menu { display: flex; justify-content: flex-end; gap: 8px; margin: 20px 0 0; padding: 0; }
@@ -98,6 +99,7 @@
     <fieldset>
       <legend>ランダム声音</legend>
       <label class="checkbox"><input id="randomVoiceEnabled" type="checkbox">ランダム声音を使用する</label>
+      <p id="vramWarning" class="warning" role="alert" hidden>警告：同時読み上げ数が1以上でランダム声音を使用すると、複数のVOICEVOX声音モデルが読み込まれ、VRAM消費量が増大する可能性があります。GPUの空き容量に注意してください。</p>
       <small>「話者一覧を取得」後、ランダム対象と声音別の音量・ステレオを設定できます。</small>
       <div id="randomVoiceList"><small>話者一覧を取得してください。</small></div>
     </fieldset>

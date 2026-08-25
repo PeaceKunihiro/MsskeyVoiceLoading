@@ -38,6 +38,7 @@ const misskeyPermissionDialog = document.querySelector("#misskeyPermissionDialog
 const permissionTargetOrigin = document.querySelector("#permissionTargetOrigin");
 const confirmMisskeyPermissionButton = document.querySelector("#confirmMisskeyPermission");
 const cancelMisskeyPermissionButton = document.querySelector("#cancelMisskeyPermission");
+const vramWarning = document.querySelector("#vramWarning");
 let availableStyles = [];
 let storedRandomVoiceStyles = [];
 let storedVoiceProfiles = {};
@@ -46,6 +47,12 @@ let storedMisskeyInstances = [];
 function showStatus(message, kind = "") {
   status.value = message;
   status.dataset.kind = kind;
+}
+
+function updateVramWarning() {
+  const randomEnabled = document.querySelector("#randomVoiceEnabled").checked;
+  const concurrentReads = Number(document.querySelector("#maxConcurrentReads").value);
+  vramWarning.hidden = !(randomEnabled && concurrentReads >= 1);
 }
 
 function validateEngineUrl() {
@@ -338,6 +345,7 @@ async function restore() {
     : DEFAULTS.misskeyInstances).map(normalizeMisskeyOrigin).filter(Boolean))];
   await renderMisskeyInstances();
   validateEngineUrl();
+  updateVramWarning();
 }
 
 document.querySelector("#voicevoxUrl").addEventListener("input", validateEngineUrl);
@@ -347,6 +355,8 @@ document.querySelector("#enabled").addEventListener("change", async (event) => {
 });
 loadSpeakersButton.addEventListener("click", loadSpeakers);
 addCustomVoiceButton.addEventListener("click", () => addCustomVoiceRow());
+document.querySelector("#randomVoiceEnabled").addEventListener("change", updateVramWarning);
+document.querySelector("#maxConcurrentReads").addEventListener("change", updateVramWarning);
 addMisskeyInstanceButton.addEventListener("click", async () => {
   const origin = normalizeMisskeyOrigin(misskeyInstanceUrlInput.value);
   if (!origin) {
