@@ -24,6 +24,9 @@
     #status { min-height: 2.5em; white-space: pre-line; }
     #status[data-kind="success"] { color: #48a868; }
     #status[data-kind="error"] { color: #d95757; }
+    dialog { max-width: 520px; border: 1px solid currentColor; border-radius: 8px; padding: 22px; }
+    dialog::backdrop { background: rgb(0 0 0 / .55); }
+    dialog menu { display: flex; justify-content: flex-end; gap: 8px; margin: 20px 0 0; padding: 0; }
   </style>
 </head>
 <body>
@@ -104,6 +107,23 @@
     </div>
     <output id="status" role="status"></output>
   </form>
+  <dialog id="misskeyPermissionDialog">
+    <h2>Misskeyインスタンスへのアクセス許可</h2>
+    <p>対象インスタンス：<strong id="permissionTargetOrigin"></strong></p>
+    <p>この権限は、対象サイト上のタイムラインDOMへアクセスするために使用します。</p>
+    <p>読み取る情報：</p>
+    <ul>
+      <li>ノート本文</li>
+      <li>投稿者ID</li>
+      <li>投稿時刻</li>
+    </ul>
+    <p>用途：ローカルVOICEVOXでの読み上げ</p>
+    <p>読み取った情報を外部サーバーへ送信しません。</p>
+    <menu>
+      <button id="cancelMisskeyPermission" type="button">キャンセル</button>
+      <button id="confirmMisskeyPermission" type="button">許可して続行</button>
+    </menu>
+  </dialog>
   <script src="options.js"></script>
 </body>
 </html>

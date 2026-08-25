@@ -34,6 +34,10 @@ const randomVoiceList = document.querySelector("#randomVoiceList");
 const misskeyInstancesContainer = document.querySelector("#misskeyInstances");
 const misskeyInstanceUrlInput = document.querySelector("#misskeyInstanceUrl");
 const addMisskeyInstanceButton = document.querySelector("#addMisskeyInstance");
+const misskeyPermissionDialog = document.querySelector("#misskeyPermissionDialog");
+const permissionTargetOrigin = document.querySelector("#permissionTargetOrigin");
+const confirmMisskeyPermissionButton = document.querySelector("#confirmMisskeyPermission");
+const cancelMisskeyPermissionButton = document.querySelector("#cancelMisskeyPermission");
 let availableStyles = [];
 let storedRandomVoiceStyles = [];
 let storedVoiceProfiles = {};
@@ -104,6 +108,29 @@ function normalizeMisskeyOrigin(value) {
   }
 }
 
+function confirmMisskeyPermission(origin) {
+  permissionTargetOrigin.textContent = origin;
+  misskeyPermissionDialog.showModal();
+  return new Promise((resolve) => {
+    const finish = (allowed) => {
+      confirmMisskeyPermissionButton.removeEventListener("click", allow);
+      cancelMisskeyPermissionButton.removeEventListener("click", cancel);
+      misskeyPermissionDialog.removeEventListener("cancel", cancelEvent);
+      if (misskeyPermissionDialog.open) misskeyPermissionDialog.close();
+      resolve(allowed);
+    };
+    const allow = () => finish(true);
+    const cancel = () => finish(false);
+    const cancelEvent = (event) => {
+      event.preventDefault();
+      finish(false);
+    };
+    confirmMisskeyPermissionButton.addEventListener("click", allow);
+    cancelMisskeyPermissionButton.addEventListener("click", cancel);
+    misskeyPermissionDialog.addEventListener("cancel", cancelEvent);
+  });
+}
+
 async function refreshMisskeyScripts() {
   await chrome.runtime.sendMessage({ type: "refreshMisskeyScripts" }).catch(() => {});
 }
@@ -123,9 +150,12 @@ async function renderMisskeyInstances() {
     permissionButton.textContent = permitted ? "許可済み" : "権限を許可";
     permissionButton.disabled = permitted;
     permissionButton.addEventListener("click", async () => {
-      if (await chrome.permissions.request({ origins: [pattern] })) {
+      if (await confirmMisskeyPermission(origin) &&
+          await chrome.permissions.request({ origins: [pattern] })) {
         await refreshMisskeyScripts();
         await renderMisskeyInstances();
+      } else {
+        showStatus("アクセス権限は許可されませんでした。", "error");
       }
     });
 
@@ -324,6 +354,10 @@ addMisskeyInstanceButton.addEventListener("click", async () => {
     return;
   }
   const pattern = `${origin}/*`;
+  if (!await confirmMisskeyPermission(origin)) {
+    showStatus("インスタンスの追加をキャンセルしました。", "error");
+    return;
+  }
   if (!await chrome.permissions.request({ origins: [pattern] })) {
     showStatus("このインスタンスへのアクセス権限が必要です。", "error");
     return;
