@@ -13,10 +13,14 @@ const DEFAULTS = {
   removeUrls: true,
   maxQueueSize: 10,
   maxNoteAgeSeconds: 300,
-  customVoices: []
+  customVoices: [],
+  randomVoiceEnabled: false,
+  randomVoiceStyles: [],
+  voiceProfiles: {}
 };
 
-const fields = Object.keys(DEFAULTS).filter((name) => name !== "customVoices");
+const complexFields = new Set(["customVoices", "randomVoiceStyles", "voiceProfiles"]);
+const fields = Object.keys(DEFAULTS).filter((name) => !complexFields.has(name));
 const form = document.querySelector("#settings");
 const status = document.querySelector("#status");
 const speakerSelect = document.querySelector("#speaker");
@@ -24,7 +28,10 @@ const testButton = document.querySelector("#test");
 const loadSpeakersButton = document.querySelector("#loadSpeakers");
 const customVoicesContainer = document.querySelector("#customVoices");
 const addCustomVoiceButton = document.querySelector("#addCustomVoice");
+const randomVoiceList = document.querySelector("#randomVoiceList");
 let availableStyles = [];
+let storedRandomVoiceStyles = [];
+let storedVoiceProfiles = {};
 
 function showStatus(message, kind = "") {
   status.value = message;
@@ -59,6 +66,24 @@ function readSettings() {
     mappings.set(userId, { userId, speaker: Number(row.querySelector(".custom-speaker").value) });
   });
   result.customVoices = [...mappings.values()];
+  const randomRows = [...randomVoiceList.querySelectorAll(".random-voice-row")];
+  if (randomRows.length) {
+    result.randomVoiceStyles = [];
+    result.voiceProfiles = {};
+    for (const row of randomRows) {
+      if (!row.querySelector(".random-enabled").checked) continue;
+      const styleId = Number(row.dataset.styleId);
+      const volumeScale = Math.min(2, Math.max(0, Number(row.querySelector(".profile-volume").value)));
+      const pan = Math.min(1, Math.max(-1, Number(row.querySelector(".profile-pan").value)));
+      result.randomVoiceStyles.push(styleId);
+      result.voiceProfiles[String(styleId)] = { volumeScale, pan };
+    }
+    storedRandomVoiceStyles = [...result.randomVoiceStyles];
+    storedVoiceProfiles = { ...result.voiceProfiles };
+  } else {
+    result.randomVoiceStyles = [...storedRandomVoiceStyles];
+    result.voiceProfiles = { ...storedVoiceProfiles };
+  }
   return result;
 }
 
@@ -103,6 +128,51 @@ function populateSpeakers(speakers, selectedId) {
   customVoicesContainer.querySelectorAll(".custom-speaker").forEach((select) => {
     populateSpeakerSelect(select, select.value);
   });
+  renderRandomVoices();
+}
+
+function renderRandomVoices() {
+  randomVoiceList.textContent = "";
+  const selected = new Set(storedRandomVoiceStyles.map(Number));
+  const globalVolume = Number(document.querySelector("#volumeScale").value) || 1;
+  for (const style of availableStyles) {
+    const profile = storedVoiceProfiles[String(style.id)] || {};
+    const row = document.createElement("div");
+    row.className = "random-voice-row";
+    row.dataset.styleId = style.id;
+
+    const enabledLabel = document.createElement("label");
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.className = "random-enabled";
+    checkbox.checked = selected.has(Number(style.id));
+    enabledLabel.append(checkbox, `${style.characterName} / ${style.name}（${style.id}）`);
+
+    const volumeLabel = document.createElement("label");
+    volumeLabel.textContent = "音量倍率";
+    const volume = document.createElement("input");
+    volume.type = "number";
+    volume.className = "profile-volume";
+    volume.min = "0";
+    volume.max = "2";
+    volume.step = "0.05";
+    volume.value = profile.volumeScale ?? globalVolume;
+    volumeLabel.append(volume);
+
+    const panLabel = document.createElement("label");
+    panLabel.textContent = "ステレオ";
+    const pan = document.createElement("input");
+    pan.type = "number";
+    pan.className = "profile-pan";
+    pan.min = "-1";
+    pan.max = "1";
+    pan.step = "0.05";
+    pan.value = profile.pan ?? 0;
+    panLabel.append(pan);
+
+    row.append(enabledLabel, volumeLabel, panLabel);
+    randomVoiceList.append(row);
+  }
 }
 
 function addCustomVoiceRow(mapping = { userId: "", speaker: speakerSelect.value || 3 }) {
@@ -169,6 +239,10 @@ async function restore() {
   });
   customVoicesContainer.textContent = "";
   for (const mapping of settings.customVoices || []) addCustomVoiceRow(mapping);
+  storedRandomVoiceStyles = Array.isArray(settings.randomVoiceStyles) ? settings.randomVoiceStyles : [];
+  storedVoiceProfiles = settings.voiceProfiles && typeof settings.voiceProfiles === "object"
+    ? settings.voiceProfiles
+    : {};
   validateEngineUrl();
 }
 

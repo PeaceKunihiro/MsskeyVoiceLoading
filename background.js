@@ -13,7 +13,10 @@ const DEFAULTS = {
   removeUrls: true,
   maxQueueSize: 10,
   maxNoteAgeSeconds: 300,
-  customVoices: []
+  customVoices: [],
+  randomVoiceEnabled: false,
+  randomVoiceStyles: [],
+  voiceProfiles: {}
 };
 
 const speechQueue = [];
@@ -138,7 +141,7 @@ async function ensureOffscreenDocument() {
   await creatingOffscreenDocument;
 }
 
-async function playAudio(buffer, generation) {
+async function playAudio(buffer, generation, pan) {
   if (generation !== cancellationGeneration) throw new SpeechCancelledError();
   await ensureOffscreenDocument();
   if (generation !== cancellationGeneration) throw new SpeechCancelledError();
@@ -146,7 +149,8 @@ async function playAudio(buffer, generation) {
   const response = await chrome.runtime.sendMessage({
     target: "offscreen",
     type: "playAudio",
-    audioDataUrl: arrayBufferToDataUrl(buffer)
+    audioDataUrl: arrayBufferToDataUrl(buffer),
+    pan
   });
   if (generation !== cancellationGeneration) throw new SpeechCancelledError();
   if (!response?.ok) throw new Error(response?.error || "音声を再生できませんでした");
@@ -173,17 +177,38 @@ async function validSpeakerIds(voicevoxUrl) {
 
 async function selectSpeaker(settings, userId) {
   const fallback = Number(settings.speaker);
-  const normalized = normalizeUserId(userId);
-  if (!normalized || !Array.isArray(settings.customVoices)) return fallback;
-  const mapping = settings.customVoices.find((entry) => normalizeUserId(entry?.userId) === normalized);
-  const customSpeaker = Number(mapping?.speaker);
-  if (!mapping || !Number.isInteger(customSpeaker) || customSpeaker < 0) return fallback;
   try {
     const ids = await validSpeakerIds(settings.voicevoxUrl);
-    return ids.has(customSpeaker) ? customSpeaker : fallback;
+    if (settings.randomVoiceEnabled && Array.isArray(settings.randomVoiceStyles)) {
+      const candidates = [...new Set(settings.randomVoiceStyles
+        .map(Number)
+        .filter((id) => Number.isInteger(id) && ids.has(id)))];
+      if (candidates.length) return candidates[Math.floor(Math.random() * candidates.length)];
+      return fallback;
+    }
+    const normalized = normalizeUserId(userId);
+    if (!normalized || !Array.isArray(settings.customVoices)) return fallback;
+    const mapping = settings.customVoices.find((entry) => normalizeUserId(entry?.userId) === normalized);
+    const customSpeaker = Number(mapping?.speaker);
+    return mapping && Number.isInteger(customSpeaker) && ids.has(customSpeaker)
+      ? customSpeaker
+      : fallback;
   } catch {
     return fallback;
   }
+}
+
+function clamp(value, minimum, maximum, fallback) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? Math.min(maximum, Math.max(minimum, numeric)) : fallback;
+}
+
+function voiceProfile(settings, speaker) {
+  const profile = settings.voiceProfiles?.[String(speaker)] || {};
+  return {
+    volumeScale: clamp(profile.volumeScale, 0, 2, clamp(settings.volumeScale, 0, 2, 1)),
+    pan: clamp(profile.pan, -1, 1, 0)
+  };
 }
 
 async function speakNow(text, generation, userId) {
@@ -192,9 +217,10 @@ async function speakNow(text, generation, userId) {
   try {
     const speaker = await selectSpeaker(settings, userId);
     if (generation !== cancellationGeneration) throw new SpeechCancelledError();
-    const audio = await synthesize(text, settings, generation, speaker);
+    const profile = voiceProfile(settings, speaker);
+    const audio = await synthesize(text, { ...settings, volumeScale: profile.volumeScale }, generation, speaker);
     console.info("[MisskeyReader] VOICEVOX connected");
-    await playAudio(audio, generation);
+    await playAudio(audio, generation, profile.pan);
   } catch (error) {
     if (error instanceof SpeechCancelledError) throw error;
     console.error("[MisskeyReader] VOICEVOX connection error", error.message);

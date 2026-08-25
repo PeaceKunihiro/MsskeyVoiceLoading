@@ -17,6 +17,9 @@
     .speaker-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: end; }
     fieldset { display: grid; gap: 12px; padding: 16px; }
     .custom-voice-row { display: grid; grid-template-columns: minmax(130px, 1fr) minmax(220px, 2fr) auto; gap: 8px; }
+    #randomVoiceList { display: grid; gap: 8px; max-height: 360px; overflow: auto; }
+    .random-voice-row { display: grid; grid-template-columns: minmax(220px, 2fr) 110px 110px; gap: 8px; align-items: center; }
+    .random-voice-row > label:first-child { display: flex; flex-direction: row; align-items: center; gap: 8px; }
     #status { min-height: 2.5em; white-space: pre-line; }
     #status[data-kind="success"] { color: #48a868; }
     #status[data-kind="error"] { color: #d95757; }
@@ -67,6 +70,12 @@
       <small>MisskeyユーザーIDごとに話者を指定します。ローカルは @user、リモートは @user@host の形式で入力してください。</small>
       <div id="customVoices"></div>
       <button id="addCustomVoice" type="button">対応を追加</button>
+    </fieldset>
+    <fieldset>
+      <legend>ランダム声音</legend>
+      <label class="checkbox"><input id="randomVoiceEnabled" type="checkbox">ランダム声音を使用する</label>
+      <small>「話者一覧を取得」後、ランダム対象と声音別の音量・ステレオを設定できます。</small>
+      <div id="randomVoiceList"><small>話者一覧を取得してください。</small></div>
     </fieldset>
     <div class="row">
       <button type="submit">保存</button>
